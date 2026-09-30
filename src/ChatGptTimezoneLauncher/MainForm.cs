@@ -199,7 +199,9 @@ public sealed class MainForm : Form
             if (!closed.Success) { MessageBox.Show(this, closed.Message, "未能关闭", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
         }
 
-        var launch = _launcher.Launch(installation, _config.TimeZoneOverrideEnabled ? zone : null);
+        SetBusy(true, "正在启动并验证 ChatGPT…");
+        var launch = await _launcher.LaunchAsync(installation, _config.TimeZoneOverrideEnabled ? zone : null);
+        SetBusy(false);
         _details.Text = launch.Message + Environment.NewLine + discovery.Diagnostics;
         if (!launch.Success) MessageBox.Show(this, launch.Message, "启动结果", MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }

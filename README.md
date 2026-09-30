@@ -23,7 +23,7 @@
 
 ## 使用
 
-1. 从 GitHub Releases 下载 `ChatGPT-TimeZone-Launcher-v1.1.0-win-x64.exe`，放在任意普通目录后运行，无需安装和管理员权限。
+1. 运行 `ChatGPT时区启动器.exe`（当前本地修复版为 1.1.1），放在任意普通目录即可使用，无需安装和管理员权限。
 2. 选择“自动跟随 ChatGPT 实际出口”或“手动选择时区”。
 3. 点击“保存并启动 ChatGPT”。自动模式会在每次启动前重新联网检测，节点变化不会被旧缓存遮盖。
 4. 如要停用覆盖，点击醒目的“恢复 ChatGPT 默认启动方式”。此时两个模式均不选中；之后点击“启动 ChatGPT（默认方式）”会使用标准 AppX 激活，不注入 `TZ`。重新点选任一模式即可再次启用。
@@ -63,10 +63,13 @@ OpenAI 官方说明 Windows 客户端通过 Microsoft Store 分发，当前官�
 1. 查询当前用户的开始菜单 ChatGPT 入口和已注册 AppX/MSIX 包；
 2. 读取已注册包清单中的 `InstallLocation`、`Application Id`、`Executable` 和 `Parameters`；
 3. 对候选项评分，并优先选择版本号最新的 ChatGPT 入口；
-4. 启用覆盖时直接创建清单所指的 full-trust 桌面入口进程，并仅在该进程环境中加入 `TZ`；
-5. 默认方式使用 `shell:AppsFolder\<PackageFamilyName>!<AppId>` 标准激活，因此不会残留启动器注入值。
+4. 启用覆盖时，通过 Windows 自带的 `Invoke-CommandInDesktopPackage -PreventBreakaway` 在当前 ChatGPT 包身份内启动一个短时辅助进程，再由它创建清单所指的 full-trust 桌面入口，仅在 ChatGPT 子进程环境中加入 `TZ`；
+5. 辅助进程和 ChatGPT 都必须通过真实包身份核验；等待 3 秒检查立即退出后才报告初始启动成功。失败、超时会明确报错，不会退回无包身份的直接启动；
+6. 默认方式使用 `shell:AppsFolder\<PackageFamilyName>!<AppId>` 标准激活，并从本次调用环境中移除继承的 `TZ`。没有全局时区覆盖需要清理。
 
-本机调研时检测到的当前包是 `OpenAI.Codex_26.825.6671.0_x64__2p2nqsd0c76g0`，清单入口为 `app/ChatGPT.exe`，`EntryPoint=Windows.FullTrustApplication`。这只是验证样本，不存在于代码常量中；Store 更新后的新版本目录会在每次启动时重新发现。参考：[OpenAI Windows 客户端说明](https://help.openai.com/en/articles/9982051)、[Microsoft 的 packaged desktop app 运行说明](https://learn.microsoft.com/windows/msix/desktop/desktop-to-uwp-behind-the-scenes)、[MSIX 清单入口说明](https://learn.microsoft.com/windows/msix/desktop/desktop-to-uwp-manual-conversion)。
+2026-09-29 实测包为 `OpenAI.Codex_26.924.2738.0_x64__2p2nqsd0c76g0`，清单入口为 `app/ChatGPT.exe`，`EntryPoint=Windows.FullTrustApplication`。这只是验证样本，不存在于代码常量中；Store 更新后的新版本目录会在每次启动时重新发现。
+
+1.1.0 的带时区分支直接运行 EXE，未保留新版客户端所需的包身份；1.1.1 修复了这条启动路径。辅助进程复用同一个单文件 EXE，通过仅当前用户可连接的随机命名管道收发请求和验证结果。它不注册新包或证书、不启用持久包调试设置，也不修改 ChatGPT 文件。接口保证及适用范围见 [微软 Invoke-CommandInDesktopPackage 文档](https://learn.microsoft.com/en-us/powershell/module/appx/invoke-commandindesktoppackage?view=windowsserver2025-ps)。
 
 ## 配置与恢复
 
@@ -96,18 +99,19 @@ dist\win-x64\ChatGPT时区启动器.exe
 
 ## 验证结果
 
-自动化测试 20/20 通过，覆盖：ChatGPT 美国出口与 Default 台湾出口分离、ChatGPT 节点切换、Default Proxy 切换、trace fallback/完全失败、指定 IP GeoIP fallback/完全失败、Clash 未运行、非 Clash 网络、旧版错误缓存迁移，以及原有配置、AppX 定位、手动时区、恢复默认和已运行分支。
+自动化测试 25/25 通过，覆盖：原有出口检测、配置和包定位场景，以及包启动失败/超时、非法时区、更新后入口缺失、继承 TZ 清除和真实 Windows 未注册包错误。
 
 本机人工验证：
 
-- 旧逻辑实测得到 Default Proxy 的台湾出口；新逻辑实测 `chatgpt.com/cdn-cgi/trace` 返回 `134.195.101.58`（美国），指定 IP 查询得到 `San Jose, US` 和 `America/Los_Angeles`；
-- 实际包清单动态解析成功，定位到当前 `OpenAI.Codex` 包的 `app/ChatGPT.exe`；
-- 中文 GUI 在 100% DPI 下完成视觉检查；
-- 本机 ChatGPT 当时正在承载当前任务，因此未执行“关闭并重启”的破坏性端到端测试。
+- 动态定位当前 `OpenAI.Codex` 包，在非管理员权限下启动真实客户端，并核验进程持有该包身份；
+- 使用独立临时用户目录，真实页面的 `Intl.DateTimeFormat().resolvedOptions().timeZone` 分别返回 `America/New_York`、`Asia/Tokyo`；无覆盖时返回 `Asia/Taipei`，与本机 Windows 默认时区一致；
+- 东京及无覆盖场景通过待交付的单文件 EXE 完成，不只使用模拟启动函数；
+- Windows 时区、用户/系统 `TZ` 未改变。当前用户原有会话未被关闭；不以独立测试替代对已登录会话的承诺。详细范围见 `TEST-RESULTS.md`。
 
 ## 已知限制
 
 - 交付 EXE 为 Windows x64；ARM64 需要将构建运行时改为 `win-arm64` 后重新发布。
 - GeoIP 的城市级定位由第三方数据库提供，可能存在误差；时区字段为空或不是有效 IANA ID 时会视为失败。
-- 进程级方案依赖 ChatGPT 继续使用可直接创建的 packaged full-trust 桌面入口。若未来 Store 包改为纯 AppContainer/UWP，Windows 标准激活接口无法附加任意进程环境变量，届时启动器会明确报错而不会修改系统设置绕过。
+- 此方案适用于已实测的 packaged full-trust 桌面入口。微软将包内命令接口定位为调试/排障工具，其令牌与标准应用激活不完全相同；未来客户端或 Windows 版本变更仍需重新验证。它不适用于需要 AppContainer 隔离的 UWP 应用。
+- 3 秒存活和包身份检查只验证初始启动，不代表联网、登录或后续功能全部正常。切换时区需要彻底退出正在运行的 ChatGPT；仅关闭窗口可能仍驻留后台。启动器仍不会强制结束用户进程。
 - 未签名的独立 EXE 可能触发 Windows SmartScreen 提示；源码构建本身不包含代码签名证书。

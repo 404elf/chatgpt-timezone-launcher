@@ -3,6 +3,9 @@ using System.Net;
 using System.Text;
 using ChatGptTimezoneLauncher;
 
+if (args.Length == 2 && args[0] == PackagedProcessLauncher.HelperArgument)
+    return await PackagedProcessLauncher.RunHelperAsync(args[1]);
+
 var tests = new (string Name, Func<Task> Run)[]
 {
     ("IANA timezone validation", TestTimeZones),
@@ -25,6 +28,11 @@ var tests = new (string Name, Func<Task> Run)[]
     ("restore/default launch has no TZ injection", TestDefaultLaunch),
     ("default activation allows an existing ChatGPT instance", TestDefaultExisting),
     ("TZ override refuses an existing ChatGPT instance", TestTzExisting),
+    ("package startup failure cannot report success", TestPackageFailure),
+    ("invalid timezone cannot start a package", TestInvalidLaunch),
+    ("missing updated executable cannot start a package", TestMissingExecutable),
+    ("default startup strips an inherited TZ", TestDefaultInheritedTz),
+    ("missing package returns the Windows activation error", TestMissingPackageActivation),
 };
 
 var failures = 0;
@@ -203,44 +211,99 @@ static async Task TestNotInstalled()
     Assert(!result.Found && result.Diagnostics.Contains("未发现"), "missing install diagnostics absent");
 }
 
-static Task TestTzLaunch()
+static async Task TestTzLaunch()
 {
     using var temp = new TempDirectory(); var exe = System.IO.Path.Combine(temp.Path, "UniqueChatGptTest.exe"); File.WriteAllBytes(exe, [0]);
-    ProcessStartInfo? captured = null; var launcher = new ChatGptLauncher(info => { captured = info; return null; });
+    var directStarted = false; ChatGptInstallation? captured = null; string? capturedZone = null;
+    var before = Environment.GetEnvironmentVariable("TZ");
+    var launcher = new ChatGptLauncher(_ => { directStarted = true; return null; },
+        (installation, zone) => { captured = installation; capturedZone = zone;
+            return Task.FromResult(new PackageLaunchResult(true, 1234, installation.PackageFullName, "verified")); });
     var install = FakeInstall(temp.Path, exe);
-    var result = launcher.Launch(install, "America/New_York");
-    Assert(result.Success && captured?.Environment["TZ"] == "America/New_York" && !captured.UseShellExecute, "TZ was not process-local");
-    return Task.CompletedTask;
+    var result = await launcher.LaunchAsync(install, "America/New_York");
+    Assert(result.Success && captured == install && capturedZone == "America/New_York" && !directStarted,
+        "timezone launch bypassed package activation");
+    Assert(Environment.GetEnvironmentVariable("TZ") == before, "launcher changed its own TZ");
 }
 
-static Task TestDefaultLaunch()
+static async Task TestDefaultLaunch()
 {
     using var temp = new TempDirectory(); var exe = System.IO.Path.Combine(temp.Path, "UniqueChatGptDefaultTest.exe"); File.WriteAllBytes(exe, [0]);
     ProcessStartInfo? captured = null; var launcher = new ChatGptLauncher(info => { captured = info; return null; });
-    var result = launcher.Launch(FakeInstall(temp.Path, exe), null);
+    var result = await launcher.LaunchAsync(FakeInstall(temp.Path, exe), null);
     Assert(result.Success && captured?.FileName == "explorer.exe" && !captured.Environment.ContainsKey("TZ") &&
            captured.ArgumentList.Single().Contains("shell:AppsFolder"), "default launch retained TZ or skipped AppX activation");
-    return Task.CompletedTask;
 }
 
-static Task TestDefaultExisting()
+static async Task TestDefaultExisting()
 {
     ProcessStartInfo? captured = null; var launcher = new ChatGptLauncher(info => { captured = info; return null; });
     var current = Environment.ProcessPath!;
     var install = FakeInstall(System.IO.Path.GetDirectoryName(current)!, current);
-    var result = launcher.Launch(install, null);
+    var result = await launcher.LaunchAsync(install, null);
     Assert(result.Success && captured?.FileName == "explorer.exe", "default activation incorrectly required restart");
-    return Task.CompletedTask;
 }
 
-static Task TestTzExisting()
+static async Task TestTzExisting()
 {
     var started = false; var launcher = new ChatGptLauncher(_ => { started = true; return null; });
     var current = Environment.ProcessPath!;
     var install = FakeInstall(System.IO.Path.GetDirectoryName(current)!, current);
-    var result = launcher.Launch(install, "Asia/Tokyo");
+    var result = await launcher.LaunchAsync(install, "Asia/Tokyo");
     Assert(!result.Success && result.WasAlreadyRunning && !started, "existing process was incorrectly relaunched with TZ");
-    return Task.CompletedTask;
+}
+
+static async Task TestPackageFailure()
+{
+    using var temp = new TempDirectory(); var exe = System.IO.Path.Combine(temp.Path, "UniquePackageFailure.exe"); File.WriteAllBytes(exe, [0]);
+    var launcher = new ChatGptLauncher(startPackaged: (_, _) =>
+        Task.FromResult(new PackageLaunchResult(false, 10, null, "package identity missing")));
+    var result = await launcher.LaunchAsync(FakeInstall(temp.Path, exe), "Asia/Tokyo");
+    Assert(!result.Success && result.Message.Contains("package identity missing"), "package failure was hidden");
+    launcher = new ChatGptLauncher(startPackaged: (_, _) => throw new TimeoutException("activation timed out"));
+    result = await launcher.LaunchAsync(FakeInstall(temp.Path, exe), "Asia/Tokyo");
+    Assert(!result.Success && result.Message.Contains("activation timed out"), "timeout was hidden");
+}
+
+static async Task TestInvalidLaunch()
+{
+    var started = false;
+    var launcher = new ChatGptLauncher(startPackaged: (_, _) => { started = true; throw new Exception("must not start"); });
+    var result = await launcher.LaunchAsync(FakeInstall(System.IO.Path.GetTempPath(), "NoSuchChatGPT.exe"), "Mars/Olympus");
+    Assert(!result.Success && !started && result.Message.Contains("时区无效"), "invalid timezone reached activation");
+}
+
+static async Task TestMissingExecutable()
+{
+    var started = false;
+    var launcher = new ChatGptLauncher(startPackaged: (_, _) => { started = true; throw new Exception("must not start"); });
+    var result = await launcher.LaunchAsync(FakeInstall(System.IO.Path.GetTempPath(), "NoSuchChatGPT.exe"), "Asia/Tokyo");
+    Assert(!result.Success && !started && result.Message.Contains("更新"), "missing executable reached activation");
+}
+
+static async Task TestDefaultInheritedTz()
+{
+    var before = Environment.GetEnvironmentVariable("TZ");
+    try
+    {
+        Environment.SetEnvironmentVariable("TZ", "Asia/Tokyo");
+        await TestDefaultLaunch();
+        Assert(Environment.GetEnvironmentVariable("TZ") == "Asia/Tokyo", "default launch changed parent environment");
+    }
+    finally { Environment.SetEnvironmentVariable("TZ", before); }
+}
+
+static async Task TestMissingPackageActivation()
+{
+    try
+    {
+        await new PackagedProcessLauncher().LaunchAsync(FakeInstall(System.IO.Path.GetTempPath(), "NoSuchChatGPT.exe"), "Asia/Tokyo");
+        throw new Exception("unregistered package unexpectedly launched");
+    }
+    catch (InvalidOperationException ex)
+    {
+        Assert(ex.Message.Contains("Windows 包内启动失败"), "activation error lost Windows diagnostics");
+    }
 }
 
 static ScenarioHandler ExplicitUsScenario() => new((request, _) => request.RequestUri!.Host switch

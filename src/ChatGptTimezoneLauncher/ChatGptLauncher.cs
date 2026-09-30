@@ -5,13 +5,18 @@ namespace ChatGptTimezoneLauncher;
 public sealed class ChatGptLauncher
 {
     private readonly Func<ProcessStartInfo, Process?> _startProcess;
+    private readonly Func<ChatGptInstallation, string?, Task<PackageLaunchResult>> _startPackaged;
 
-    public ChatGptLauncher(Func<ProcessStartInfo, Process?>? startProcess = null) =>
+    public ChatGptLauncher(Func<ProcessStartInfo, Process?>? startProcess = null,
+        Func<ChatGptInstallation, string?, Task<PackageLaunchResult>>? startPackaged = null)
+    {
         _startProcess = startProcess ?? Process.Start;
+        _startPackaged = startPackaged ?? new PackagedProcessLauncher().LaunchAsync;
+    }
 
     public bool IsRunning(ChatGptInstallation installation) => FindRunning(installation).Count > 0;
 
-    public LaunchResult Launch(ChatGptInstallation installation, string? ianaTimeZone)
+    public async Task<LaunchResult> LaunchAsync(ChatGptInstallation installation, string? ianaTimeZone)
     {
         var running = IsRunning(installation);
         if (running && ianaTimeZone is not null)
@@ -24,6 +29,7 @@ public sealed class ChatGptLauncher
             {
                 start = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
                 start.ArgumentList.Add($"shell:AppsFolder\\{installation.Aumid}");
+                start.Environment.Remove("TZ");
             }
             else
             {
@@ -32,20 +38,14 @@ public sealed class ChatGptLauncher
                 if (!File.Exists(installation.ExecutablePath))
                     return new LaunchResult(false, false, $"ChatGPT 入口文件不存在，可能刚刚完成更新。请重试。\r\n{installation.ExecutablePath}");
 
-                start = new ProcessStartInfo(installation.ExecutablePath)
-                {
-                    UseShellExecute = false,
-                    WorkingDirectory = Path.GetDirectoryName(installation.ExecutablePath)!
-                };
-                start.Environment["TZ"] = ianaTimeZone;
-                if (!string.IsNullOrWhiteSpace(installation.Parameters))
-                    AddCommandLine(start, installation.Parameters);
+                var result = await _startPackaged(installation, ianaTimeZone);
+                return new LaunchResult(result.Success, false, result.Success
+                    ? $"已启动 ChatGPT，本次进程时区：{ianaTimeZone}。\r\n已验证包身份与初始启动（PID {result.ProcessId}）。"
+                    : $"启动失败：{result.Message}");
             }
 
             _startProcess(start);
-            return new LaunchResult(true, false, ianaTimeZone is null
-                ? "已按 ChatGPT 默认方式启动（未注入 TZ）。"
-                : $"已启动 ChatGPT，本次进程时区：{ianaTimeZone}");
+            return new LaunchResult(true, false, "已请求按 ChatGPT 默认方式启动（未注入 TZ）。");
         }
         catch (Exception ex)
         {
@@ -89,9 +89,4 @@ public sealed class ChatGptLauncher
         return result;
     }
 
-    private static void AddCommandLine(ProcessStartInfo start, string commandLine)
-    {
-        // Manifest parameters are package-authored and may contain quoting. Arguments preserves them verbatim.
-        start.Arguments = commandLine;
-    }
 }
