@@ -23,7 +23,7 @@
 
 ## 使用
 
-1. 运行 `ChatGPT时区启动器.exe`（当前本地修复版为 1.1.1），放在任意普通目录即可使用，无需安装和管理员权限。
+1. 从 [GitHub Releases](https://github.com/404elf/chatgpt-timezone-launcher/releases/latest) 下载 `ChatGPT-TimeZone-Launcher-v1.1.2-win-x64.exe`，放在任意普通目录后运行，无需安装和管理员权限。
 2. 选择“自动跟随 ChatGPT 实际出口”或“手动选择时区”。
 3. 点击“保存并启动 ChatGPT”。自动模式会在每次启动前重新联网检测，节点变化不会被旧缓存遮盖。
 4. 如要停用覆盖，点击醒目的“恢复 ChatGPT 默认启动方式”。此时两个模式均不选中；之后点击“启动 ChatGPT（默认方式）”会使用标准 AppX 激活，不注入 `TZ`。重新点选任一模式即可再次启用。
@@ -69,7 +69,7 @@ OpenAI 官方说明 Windows 客户端通过 Microsoft Store 分发，当前官�
 
 2026-09-29 实测包为 `OpenAI.Codex_26.924.2738.0_x64__2p2nqsd0c76g0`，清单入口为 `app/ChatGPT.exe`，`EntryPoint=Windows.FullTrustApplication`。这只是验证样本，不存在于代码常量中；Store 更新后的新版本目录会在每次启动时重新发现。
 
-1.1.0 的带时区分支直接运行 EXE，未保留新版客户端所需的包身份；1.1.1 修复了这条启动路径。辅助进程复用同一个单文件 EXE，通过仅当前用户可连接的随机命名管道收发请求和验证结果。它不注册新包或证书、不启用持久包调试设置，也不修改 ChatGPT 文件。接口保证及适用范围见 [微软 Invoke-CommandInDesktopPackage 文档](https://learn.microsoft.com/en-us/powershell/module/appx/invoke-commandindesktoppackage?view=windowsserver2025-ps)。
+1.1.0/1.1.1 的带时区分支直接运行 EXE，未保留新版客户端所需的包身份；1.1.2 修复了这条启动路径。辅助进程复用同一个单文件 EXE，通过仅当前用户可连接的随机命名管道收发请求和验证结果。它不注册新包或证书、不启用持久包调试设置，也不修改 ChatGPT 文件。接口保证及适用范围见 [微软 Invoke-CommandInDesktopPackage 文档](https://learn.microsoft.com/en-us/powershell/module/appx/invoke-commandindesktoppackage?view=windowsserver2025-ps)。
 
 ## 配置与恢复
 
@@ -91,15 +91,21 @@ OpenAI 官方说明 Windows 客户端通过 Microsoft Store 分发，当前官�
 .\build.ps1
 ```
 
-脚本先运行测试，再发布 `win-x64`、自包含、压缩的单文件 EXE。输出：
+脚本先运行测试，再发布 `win-x64`、自包含、压缩的单文件 EXE，然后在独立目录验证最终 EXE 的首次启动和损坏配置恢复。任一步失败会停止。输出：
 
 ```text
 dist\win-x64\ChatGPT时区启动器.exe
 ```
 
-## 验证结果
+## v1.1.1 历史启动修复
 
-自动化测试 25/25 通过，覆盖：原有出口检测、配置和包定位场景，以及包启动失败/超时、非法时区、更新后入口缺失、继承 TZ 清除和真实 Windows 未注册包错误。
+修复损坏配置导致窗口创建前退出的问题，并增加启动异常日志和最终 EXE 的隔离启动检查。当时回归测试 **21/21** 通过，发布 EXE 的首次启动及损坏配置启动检查均通过。本次版本保留这些修复与检查。详细原因、验证边界和排错方法见 [v1.1.1 修复说明](docs/RELEASE_NOTES_v1.1.1.md)。
+
+启动错误日志：`%LocalAppData%\ChatGPTTimezoneLauncher\logs`（不可写时尝试 `%TEMP%\ChatGPTTimezoneLauncher\logs`）。若无日志，请提供 Windows 版本、CPU 架构及系统错误提示，不能假定所有“无反应”都由同一原因引起。
+
+## v1.1.2 验证结果
+
+自动化测试 26/26 通过，覆盖：原有出口检测、配置和包定位场景、损坏配置下窗口构造，以及包启动失败/超时、非法时区、更新后入口缺失、继承 TZ 清除和真实 Windows 未注册包错误。构建后还验证最终单文件 EXE 在首次启动、损坏配置两种情况下都能创建窗口并正常退出。
 
 本机人工验证：
 

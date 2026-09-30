@@ -11,6 +11,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("IANA timezone validation", TestTimeZones),
     ("config save/load and backup", TestConfigSaveLoad),
     ("corrupt config safely defaults", TestCorruptConfig),
+    ("main window survives corrupt config", TestCorruptConfigWindow),
     ("legacy self-exit cache is discarded", TestLegacyDetectionCache),
     ("Cloudflare trace parser", TestTraceParser),
     ("ChatGPT US route wins while default route is TW", TestSplitRouting),
@@ -71,6 +72,29 @@ static Task TestCorruptConfig()
     var loaded = new ConfigStore(temp.Path).Load();
     Assert(loaded.Warning is not null && !loaded.Config.TimeZoneOverrideEnabled, "corruption did not safely default");
     Assert(File.ReadAllText(System.IO.Path.Combine(temp.Path, "settings.json")) == "{broken", "corrupt source was destroyed");
+    return Task.CompletedTask;
+}
+
+static Task TestCorruptConfigWindow()
+{
+    using var temp = new TempDirectory();
+    var path = System.IO.Path.Combine(temp.Path, "settings.json");
+    File.WriteAllText(path, "{broken");
+    Exception? error = null;
+    var thread = new Thread(() =>
+    {
+        try
+        {
+            using var form = new MainForm(new ConfigStore(temp.Path));
+            Assert(!form.IsDisposed, "window was disposed");
+        }
+        catch (Exception ex) { error = ex; }
+    });
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    Assert(thread.Join(TimeSpan.FromSeconds(20)), "window construction timed out");
+    if (error is not null) throw error;
+    Assert(File.ReadAllText(path) == "{broken", "corrupt config was changed");
     return Task.CompletedTask;
 }
 

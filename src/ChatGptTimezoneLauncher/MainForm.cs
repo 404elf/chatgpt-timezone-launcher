@@ -4,7 +4,7 @@ namespace ChatGptTimezoneLauncher;
 
 public sealed class MainForm : Form
 {
-    private readonly ConfigStore _configStore = new();
+    private readonly ConfigStore _configStore;
     private readonly GeoIpService _geoIp = new();
     private readonly ChatGptDiscovery _discovery = new();
     private readonly ChatGptLauncher _launcher = new();
@@ -27,8 +27,9 @@ public sealed class MainForm : Form
     private readonly Button _shortcutButton = new() { Text = "创建桌面快捷方式", AutoSize = true };
     private readonly TextBox _details = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Height = 84, Dock = DockStyle.Fill };
 
-    public MainForm()
+    public MainForm(ConfigStore? configStore = null)
     {
+        _configStore = configStore ?? new ConfigStore();
         var loaded = _configStore.Load();
         _config = loaded.Config;
         Text = "ChatGPT 时区启动器";
@@ -52,7 +53,7 @@ public sealed class MainForm : Form
         _timeZoneBox.SelectedIndexChanged += (_, _) => { if (_timeZoneBox.Focused) _manualRadio.Checked = true; };
 
         if (loaded.Warning is not null)
-            BeginInvoke(() => MessageBox.Show(this, loaded.Warning, "配置提示", MessageBoxButtons.OK, MessageBoxIcon.Warning));
+            _details.Text = loaded.Warning;
     }
 
     private void BuildUi()
