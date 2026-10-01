@@ -6,13 +6,18 @@ namespace ChatGptTimezoneLauncher;
 public sealed class MainForm : Form
 {
     private readonly ConfigStore _configStore;
-    private readonly GeoIpService _geoIp = new();
+    private readonly GeoIpService _geoIp;
     private readonly ChatGptDiscovery _discovery = new();
     private readonly ChatGptLauncher _launcher = new();
     private readonly UpdateService _updates = new();
     private readonly ToolTip _toolTip = new();
     private bool _busy;
     private bool _checkingUpdate;
+    private CancellationTokenSource? _detectionCancellation;
+    private readonly Stopwatch _detectionWatch = new();
+    private readonly System.Windows.Forms.Timer _detectionTimer = new() { Interval = 1000 };
+    private string _detectionLog = "";
+    private string _detectionStep = "获取出口 IP";
     private LauncherConfig _config;
     private Panel _manualPanel = null!;
     private Panel _detailsPanel = null!;
@@ -36,8 +41,9 @@ public sealed class MainForm : Form
     private readonly LinkLabel _updateLink = new() { Text = "↻ 更新", AutoSize = true, LinkColor = Color.DimGray, Margin = new Padding(12, 8, 3, 3) };
     private readonly TextBox _details = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Height = 84, Dock = DockStyle.Fill };
 
-    public MainForm(ConfigStore? configStore = null, bool checkUpdates = true)
+    public MainForm(ConfigStore? configStore = null, bool checkUpdates = true, GeoIpService? geoIp = null)
     {
+        _geoIp = geoIp ?? new GeoIpService();
         _configStore = configStore ?? new ConfigStore();
         var loaded = _configStore.Load();
         _config = loaded.Config;
@@ -56,7 +62,18 @@ public sealed class MainForm : Form
 
         _autoRadio.CheckedChanged += (_, _) => UpdateModeUi();
         _manualRadio.CheckedChanged += (_, _) => UpdateModeUi();
-        _detectButton.Click += async (_, _) => await DetectAsync();
+        _detectButton.Click += async (_, _) =>
+        {
+            if (_detectionCancellation is not null)
+            {
+                _detectButton.Enabled = false;
+                _detectionState.Text = "正在取消检测…";
+                _detectionCancellation.Cancel();
+                return;
+            }
+            await DetectAsync();
+        };
+        _detectionTimer.Tick += (_, _) => UpdateDetectionProgress();
         _launchButton.Click += async (_, _) => await SaveAndLaunchAsync();
         _restoreButton.Click += (_, _) => RestoreDefault();
         _shortcutButton.Click += (_, _) => CreateShortcut();
@@ -191,11 +208,16 @@ public sealed class MainForm : Form
 
     private async Task DetectAsync()
     {
-        SetBusy(true, "正在检测当前网络出口…");
         var watch = Stopwatch.StartNew();
-        var result = await _geoIp.DetectAsync();
+        DetectionResult result;
+        try { result = await DetectCurrentExitAsync(); }
+        catch (OperationCanceledException)
+        {
+            if (!IsDisposed) ShowDetectionCancelled();
+            return;
+        }
+        finally { if (!IsDisposed) SetBusy(false); }
         if (IsDisposed) return;
-        SetBusy(false);
         if (result.Success)
         {
             ShowLocation(result.Location!, $"检测成功 · {watch.Elapsed.TotalSeconds:0.0} 秒");
@@ -209,12 +231,13 @@ public sealed class MainForm : Form
                 _config.LastSuccessfulAutoDetection = result.Location;
                 _configStore.Save(_config);
             }
-            _details.Text = ipError ?? $"先通过 {result.Location!.DetectionMethod} 确定 ChatGPT 出口，再由 {result.Location.Provider} 查询该指定 IP。每次启动都会重新探测。";
+            _details.Text = (ipError ?? $"先通过 {result.Location!.DetectionMethod} 确定 ChatGPT 出口，再由 {result.Location.Provider} 查询该指定 IP。每次启动都会重新探测。")
+                + "\r\n\r\n" + _detectionLog;
         }
         else
         {
             _detectionState.Text = "ChatGPT 出口检测失败（未猜测时区）"; _detectionState.ForeColor = Color.Firebrick;
-            _details.Text = result.Message + LastSuccessText();
+            _details.Text = result.Message + "\r\n\r\n" + _detectionLog + LastSuccessText();
             _ipValue.Text = "无法确认出口"; _locationValue.Text = _zoneValue.Text = "—";
         }
     }
@@ -230,10 +253,9 @@ public sealed class MainForm : Form
             return;
         }
 
-        SetBusy(true, "启动前检查 ChatGPT 出口 IP 和地区…");
         try
         {
-            var guarded = await LaunchProtection.RunAsync(() => _geoIp.DetectAsync(), async location =>
+            var guarded = await LaunchProtection.RunAsync(DetectCurrentExitAsync, async location =>
             {
                 if (IsDisposed) return null;
                 _config.LastSuccessfulAutoDetection = location;
@@ -246,7 +268,7 @@ public sealed class MainForm : Form
                 SetBusy(true, "正在定位 Windows 版 ChatGPT…");
                 var discovery = await _discovery.DiscoverAsync();
                 if (IsDisposed) return null;
-                _details.Text = discovery.Diagnostics;
+                _details.Text = _detectionLog + Environment.NewLine + discovery.Diagnostics;
                 if (!discovery.Found)
                     return new LaunchResult(false, false, "未找到 Windows 版 ChatGPT。\r\n\r\n" + discovery.Diagnostics);
 
@@ -275,7 +297,12 @@ public sealed class MainForm : Form
             if (guarded.IpError is not null)
             {
                 _detectionState.Text = "IP 错误（未启动）"; _detectionState.ForeColor = Color.Firebrick;
-                _details.Text = guarded.IpError;
+                if (guarded.Location is null)
+                {
+                    _ipValue.Text = "无法确认出口";
+                    _locationValue.Text = _zoneValue.Text = "—";
+                }
+                _details.Text = guarded.IpError + "\r\n\r\n" + _detectionLog;
                 MessageBox.Show(this, guarded.IpError, "IP 错误", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
@@ -286,7 +313,60 @@ public sealed class MainForm : Form
                 if (LaunchProtection.ShouldCloseLauncher(_config.CloseLauncherAfterLaunch, launch)) Close();
             }
         }
+        catch (OperationCanceledException) { if (!IsDisposed) ShowDetectionCancelled(); }
         finally { if (!IsDisposed) SetBusy(false); }
+    }
+
+    private async Task<DetectionResult> DetectCurrentExitAsync()
+    {
+        using var cancellation = new CancellationTokenSource();
+        _detectionCancellation = cancellation;
+        _detectionLog = "";
+        _detectionStep = "获取出口 IP";
+        _details.Clear();
+        _detectionWatch.Restart();
+        SetBusy(true, "正在检测当前出口…");
+        _detectionTimer.Start();
+        try
+        {
+            var result = await _geoIp.DetectAsync(cancellation.Token, message =>
+            {
+                if (IsDisposed) return;
+                _detectionLog += message + Environment.NewLine;
+                _details.Text = _detectionLog;
+                if (message.StartsWith("2/2")) _detectionStep = "查询地区和时区";
+            });
+            cancellation.Token.ThrowIfCancellationRequested();
+            return result;
+        }
+        finally
+        {
+            _detectionWatch.Stop();
+            _detectionCancellation = null;
+            if (!IsDisposed)
+            {
+                _detectionTimer.Stop();
+                _detectButton.Text = "重新检测";
+                _detectButton.Enabled = !_busy;
+            }
+        }
+    }
+
+    private void UpdateDetectionProgress()
+    {
+        if (_detectionCancellation is null || _detectionCancellation.IsCancellationRequested) return;
+        var seconds = (int)_detectionWatch.Elapsed.TotalSeconds;
+        _detectionState.Text = seconds >= 7 ? $"网络较慢，继续检测 · 已等待 {seconds} 秒" : $"正在{_detectionStep} · {seconds} 秒";
+        if (seconds >= 7) _locationValue.Text = $"正在{_detectionStep}，可取消检测";
+    }
+
+    private void ShowDetectionCancelled()
+    {
+        _detectionState.Text = "已取消检测（未启动）";
+        _detectionState.ForeColor = Color.DimGray;
+        _ipValue.Text = "检测已取消";
+        _locationValue.Text = _zoneValue.Text = "—";
+        _details.Text = "检测已取消，没有使用历史 IP，也没有请求启动或关闭 ChatGPT。可切换网络后重新检测。\r\n\r\n" + _detectionLog;
     }
 
     private void RestoreDefault()
@@ -367,7 +447,10 @@ public sealed class MainForm : Form
     private void SetBusy(bool busy, string? text = null)
     {
         _busy = busy;
-        UseWaitCursor = busy; _detectButton.Enabled = !busy; _launchButton.Enabled = !busy; _restoreButton.Enabled = !busy;
+        UseWaitCursor = busy && _detectionCancellation is null;
+        _detectButton.Text = _detectionCancellation is null ? "重新检测" : "取消检测";
+        _detectButton.Enabled = !busy || _detectionCancellation is { IsCancellationRequested: false };
+        _launchButton.Enabled = !busy; _restoreButton.Enabled = !busy;
         _autoRadio.Enabled = _manualRadio.Enabled = _closeAfterLaunch.Enabled = !busy;
         _timeZoneBox.Enabled = !busy && _manualRadio.Checked;
         _updateLink.Enabled = !busy && !_checkingUpdate;
@@ -377,6 +460,17 @@ public sealed class MainForm : Form
             if (text.Contains("出口") || text.Contains("当前网络"))
                 _ipValue.Text = _locationValue.Text = _zoneValue.Text = "检测中…";
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _detectionCancellation?.Cancel();
+            _detectionTimer.Dispose();
+            _toolTip.Dispose();
+        }
+        base.Dispose(disposing);
     }
 
     private void CreateShortcut()

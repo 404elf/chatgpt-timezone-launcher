@@ -19,7 +19,8 @@ internal static class FeatureTests
         ("update checker rejects untrusted or unverified downloads", TestInvalidUpdate),
         ("update download verifies bytes and preserves existing files", TestDownload),
         ("main window settings and update link fit the layout", TestWindow),
-        ("window resize and display scaling keep controls accessible", TestResponsive)
+        ("window resize and display scaling keep controls accessible", TestResponsive),
+        ("slow UI detection remains cancellable without starting or saving an exit", TestCancelDetection)
     ];
 
     private static async Task TestBlockedRegions()
@@ -256,6 +257,60 @@ internal static class FeatureTests
         if (error is not null) throw error;
         return Task.CompletedTask;
     }
+    private static Task TestCancelDetection()
+    {
+        using var temp = new TempDirectory();
+        Exception? error = null;
+        var thread = new Thread(() =>
+        {
+            Application.EnableVisualStyles();
+            using var client = new HttpClient(new WaitingHandler());
+            var store = new ConfigStore(temp.Path);
+            using var form = new MainForm(store, checkUpdates: false, geoIp: new GeoIpService(client));
+            form.Shown += async (_, _) =>
+            {
+                try
+                {
+                    var detect = AllControls(form).OfType<Button>().Single(x => x.Text == "重新检测");
+                    var launch = AllControls(form).OfType<Button>().Single(x => x.Text.StartsWith("启动 ChatGPT"));
+                    foreach (var fromLaunch in new[] { false, true })
+                    {
+                        (fromLaunch ? launch : detect).PerformClick();
+                        Require(detect.Enabled && detect.Text == "取消检测" && !launch.Enabled,
+                            "busy detection disabled its cancel action or allowed another launch");
+                        if (!fromLaunch)
+                        {
+                            await Task.Delay(8200);
+                            Require(AllControls(form).OfType<Label>().Any(x => x.Text.Contains("网络较慢，继续检测")) &&
+                                detect.Enabled && detect.Text == "取消检测", "old deadline still ended the operation or progress was missing");
+                        }
+                        detect.PerformClick();
+                        var cancellation = System.Diagnostics.Stopwatch.StartNew();
+                        while (!launch.Enabled && cancellation.Elapsed < TimeSpan.FromSeconds(2))
+                            await Task.Delay(10);
+                        Require(launch.Enabled && detect.Enabled && detect.Text == "重新检测" &&
+                            AllControls(form).OfType<Label>().Any(x => x.Text == "已取消检测（未启动）") &&
+                            !File.Exists(store.ConfigPath), "cancellation was shown as failure, left UI busy or saved an exit");
+                    }
+                }
+                catch (Exception ex) { error = ex; }
+                finally { form.Close(); }
+            };
+            // Async UI actions need the real Windows message loop and synchronization context.
+            Application.Run(form);
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        Require(thread.Join(TimeSpan.FromSeconds(15)), "cancel UI test timed out");
+        if (error is not null) throw error;
+        return Task.CompletedTask;
+    }
+
+    private sealed class WaitingHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        { await Task.Delay(Timeout.Infinite, token); throw new InvalidOperationException("wait must be cancelled"); }
+    }
+
     private static GeoLocation Location(string country) => new("203.0.113.8", country, country, null,
         "America/New_York", DateTimeOffset.Now, "test", "chatgpt.com/cdn-cgi/trace → 指定 IP GeoIP");
     private static string ReleaseJson(string? hash, bool external = false, bool checksums = false)

@@ -16,7 +16,9 @@ internal static class NetworkTests
         ("same detector switches real local Windows proxy connections", TestProxySwitch),
         ("unsupported trace region skips all slow GeoIP requests", TestFastBlock),
         ("fast valid GeoIP cancels slow providers", TestParallelGeo),
-        ("slow network detection is bounded by the overall budget", TestBudget),
+        ("late primary and GeoIP responses succeed beyond the old seven-second limit", TestLateSuccess),
+        ("slow primary trace starts backups without blocking a fast result", TestHedgedTrace),
+        ("all stalled GeoIP requests eventually fail without guessing an exit", TestRequestLimit),
         ("ChatGPT trace remains preferred over other domain routes", TestPrimaryPriority),
         ("caller cancellation cannot return an allowed exit", TestCancellation)
     ];
@@ -87,17 +89,59 @@ internal static class NetworkTests
         Console.WriteLine($"METRIC parallel-geo={watch.ElapsedMilliseconds}ms; slow requests cancelled={cancelled}");
     }
 
-    private static async Task TestBudget()
+    private static async Task TestLateSuccess()
+    {
+        var backups = 0;
+        var stages = new List<string>();
+        using var client = new HttpClient(new AsyncHandler(async (request, token) =>
+        {
+            if (request.RequestUri!.Host == "chatgpt.com")
+            { await Task.Delay(5500, token); return Text("ip=203.0.113.8\nloc=US\n"); }
+            if (request.RequestUri.AbsolutePath == "/cdn-cgi/trace")
+            { Interlocked.Increment(ref backups); throw new HttpRequestException("backup unavailable"); }
+            await Task.Delay(3000, token); return UsGeo();
+        }));
+        var watch = Stopwatch.StartNew(); var result = await new GeoIpService(client).DetectAsync(report: stages.Add);
+        Require(result.Success && LaunchProtection.GetIpError(result) is null && backups == 3 &&
+            result.Location!.DetectionMethod.StartsWith("chatgpt.com") && watch.Elapsed > TimeSpan.FromSeconds(8),
+            "a late but valid primary/GeoIP result was discarded: " + result.Message);
+        Require(stages.Any(x => x.StartsWith("获取出口 IP：")) && stages.Any(x => x.StartsWith("查询地区和时区：")),
+            "stage timings were not reported separately");
+        Console.WriteLine($"METRIC late-valid-detection={watch.ElapsedMilliseconds}ms; primary kept alive; no overall deadline");
+    }
+
+    private static async Task TestHedgedTrace()
+    {
+        var cancelled = 0;
+        using var client = new HttpClient(new AsyncHandler(async (request, token) =>
+        {
+            if (request.RequestUri!.Host == "chatgpt.com")
+            {
+                try { await Task.Delay(Timeout.Infinite, token); }
+                catch (OperationCanceledException) { Interlocked.Increment(ref cancelled); throw; }
+            }
+            if (request.RequestUri.AbsolutePath == "/cdn-cgi/trace")
+                return Text("ip=203.0.113.8\nloc=US\n");
+            return UsGeo();
+        }));
+        var watch = Stopwatch.StartNew(); var result = await new GeoIpService(client).DetectAsync();
+        await Task.Delay(50);
+        Require(result.Success && cancelled == 1 && watch.Elapsed < TimeSpan.FromSeconds(4),
+            "fallback waited for the full primary timeout or did not cancel its loser");
+        Console.WriteLine($"METRIC hedged-trace={watch.ElapsedMilliseconds}ms");
+    }
+
+    private static async Task TestRequestLimit()
     {
         using var client = new HttpClient(new AsyncHandler(async (request, token) =>
         {
-            if (request.RequestUri!.Host == "api.openai.com")
-            { await Task.Delay(1700, token); return Text("ip=203.0.113.8\nloc=US\n"); }
+            if (request.RequestUri!.Host == "chatgpt.com") return Text("ip=203.0.113.8\nloc=US\n");
             await Task.Delay(Timeout.Infinite, token); return UsGeo();
         }));
         var watch = Stopwatch.StartNew(); var result = await new GeoIpService(client).DetectAsync();
-        Require(!result.Success && watch.Elapsed < TimeSpan.FromSeconds(7.8), "network failure exceeded the budget or guessed success");
-        Console.WriteLine($"METRIC slow-network-failure={watch.ElapsedMilliseconds}ms");
+        Require(!result.Success && result.Location is null && watch.Elapsed >= TimeSpan.FromSeconds(29) &&
+            watch.Elapsed < TimeSpan.FromSeconds(35), "stalled queries failed prematurely, hung forever or guessed success");
+        Console.WriteLine($"METRIC stalled-request-failure={watch.ElapsedMilliseconds}ms; no cached exit");
     }
 
     private static async Task TestPrimaryPriority()

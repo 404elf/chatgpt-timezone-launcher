@@ -17,12 +17,13 @@ internal static class Program
             {
                 var directory = Path.GetFullPath(args[1]); Directory.CreateDirectory(directory);
                 var watch = System.Diagnostics.Stopwatch.StartNew();
-                var detection = new GeoIpService().DetectAsync().GetAwaiter().GetResult();
+                var stages = new List<string>();
+                var detection = new GeoIpService().DetectAsync(report: stages.Add).GetAwaiter().GetResult();
                 File.WriteAllText(Path.Combine(directory, "network-result.json"), System.Text.Json.JsonSerializer.Serialize(new
                 {
                     detection.Success, country = detection.Location?.CountryCode,
                     traceCountry = detection.Location?.TraceCountryCode,
-                    allowed = LaunchProtection.GetIpError(detection) is null, elapsedMs = watch.ElapsedMilliseconds
+                    allowed = LaunchProtection.GetIpError(detection) is null, elapsedMs = watch.ElapsedMilliseconds, stages
                 }));
                 return detection.Success ? 0 : 1;
             }

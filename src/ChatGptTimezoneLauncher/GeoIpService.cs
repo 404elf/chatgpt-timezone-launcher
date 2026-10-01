@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
@@ -8,7 +9,10 @@ namespace ChatGptTimezoneLauncher;
 
 public sealed class GeoIpService
 {
-    public static readonly TimeSpan DetectionTimeout = TimeSpan.FromSeconds(7);
+    // There is no overall detection deadline. Each request gets a generous safety limit,
+    // while the caller can cancel the whole operation at any time.
+    public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan TraceFallbackDelay = TimeSpan.FromMilliseconds(2500);
     private static readonly Uri[] TraceEndpoints =
     [
         new("https://chatgpt.com/cdn-cgi/trace"),
@@ -35,63 +39,76 @@ public sealed class GeoIpService
             WindowsProxyUsePolicy = WindowsProxyUsePolicy.UseWinInetProxy,
             AutomaticRedirection = false,
             AutomaticDecompression = DecompressionMethods.All,
-            SendTimeout = TimeSpan.FromSeconds(3),
-            ReceiveHeadersTimeout = TimeSpan.FromSeconds(3),
-            ReceiveDataTimeout = TimeSpan.FromSeconds(3)
+            SendTimeout = RequestTimeout,
+            ReceiveHeadersTimeout = RequestTimeout,
+            ReceiveDataTimeout = RequestTimeout
         };
         return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
     }
 
-    public async Task<DetectionResult> DetectAsync(CancellationToken cancellationToken = default)
+    public async Task<DetectionResult> DetectAsync(CancellationToken cancellationToken = default, Action<string>? report = null)
     {
         using var ownedClient = _testClient is null ? _clientFactory() : null;
         var client = _testClient ?? ownedClient!;
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(DetectionTimeout);
         var errors = new ConcurrentQueue<string>();
+        var stage = Stopwatch.StartNew();
+        report?.Invoke("1/2 正在获取 ChatGPT 实际出口 IP…");
+        TraceResult? trace;
+        using (var traceRace = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            try
+            {
+                var primary = TryTraceAsync(client, TraceEndpoints[0], errors, traceRace.Token);
+                var delayedFallback = Task.Delay(TraceFallbackDelay, traceRace.Token);
+                var first = await Task.WhenAny(primary, delayedFallback);
+                cancellationToken.ThrowIfCancellationRequested();
+                trace = first == primary ? await primary : null;
+                if (trace is null)
+                {
+                    report?.Invoke($"主查询尚未成功，开始并行尝试备用接口；原查询继续等待（{stage.Elapsed.TotalSeconds:0.0} 秒）。");
+                    // Keep the primary request alive: it may simply need another second.
+                    var pending = new List<Task<TraceResult?>> { primary };
+                    pending.AddRange(TraceEndpoints.Skip(1).Select(endpoint =>
+                        TryTraceAsync(client, endpoint, errors, traceRace.Token)));
+                    trace = await FirstValidAsync(pending, cancellationToken);
+                }
+            }
+            finally { traceRace.Cancel(); }
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        report?.Invoke($"获取出口 IP：{stage.Elapsed.TotalSeconds:0.0} 秒 · {(trace is null ? "全部查询未成功" : trace.Host)}");
+        if (trace is null)
+            return DetectionResult.Fail("无法探测 ChatGPT/OpenAI 当前出口；各查询均未成功，未使用历史结果。\r\n" + string.Join("\r\n", errors));
+
+        // Deny unsupported trace countries before any third-party timezone lookup.
+        if (!string.IsNullOrWhiteSpace(trace.CountryCode) && !LaunchProtection.IsSupportedCountry(trace.CountryCode))
+        {
+            report?.Invoke("出口地区不支持，停止启动并跳过时区查询。");
+            return DetectionResult.Ok(new GeoLocation(trace.Ip, trace.CountryCode, CountryName(trace.CountryCode),
+                null, "", DateTimeOffset.Now, "出口地区（无需时区查询）", $"{trace.Host}/cdn-cgi/trace", TraceCountryCode: trace.CountryCode));
+        }
+
+        stage.Restart();
+        report?.Invoke("2/2 正在并行查询该出口的地区和时区…");
+        using var geoRace = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         try
         {
-            TraceResult? trace;
-            using (var primary = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token))
-            {
-                primary.CancelAfter(TimeSpan.FromMilliseconds(2500));
-                trace = await TryTraceAsync(client, TraceEndpoints[0], errors, primary.Token);
-            }
-            if (trace is null && !deadline.IsCancellationRequested)
-            {
-                using var fallback = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
-                fallback.CancelAfter(TimeSpan.FromSeconds(2));
-                trace = await FirstValidAsync(TraceEndpoints.Skip(1).Select(endpoint =>
-                    TryTraceAsync(client, endpoint, errors, fallback.Token)).ToList(), fallback.Token);
-                fallback.Cancel();
-            }
-            if (trace is null)
-                return DetectionResult.Fail("无法探测 ChatGPT/OpenAI 当前出口，未使用历史结果。\r\n" + string.Join("\r\n", errors));
-
-            // Deny unsupported trace countries before any third-party timezone lookup.
-            if (!string.IsNullOrWhiteSpace(trace.CountryCode) && !LaunchProtection.IsSupportedCountry(trace.CountryCode))
-                return DetectionResult.Ok(new GeoLocation(trace.Ip, trace.CountryCode, CountryName(trace.CountryCode),
-                    null, "", DateTimeOffset.Now, "出口地区（无需时区查询）", $"{trace.Host}/cdn-cgi/trace", TraceCountryCode: trace.CountryCode));
-
-            using var geoDeadline = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
-            geoDeadline.CancelAfter(TimeSpan.FromMilliseconds(2500));
             var providers = new[] { "ipinfo.io", "ipapi.co", "ipwho.is" };
             var location = await FirstValidAsync(providers.Select(provider =>
-                TryGeoAsync(client, trace, provider, errors, geoDeadline.Token)).ToList(), geoDeadline.Token);
-            geoDeadline.Cancel();
+                TryGeoAsync(client, trace, provider, errors, geoRace.Token)).ToList(), cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            report?.Invoke($"查询地区和时区：{stage.Elapsed.TotalSeconds:0.0} 秒 · {(location is null ? "全部查询未成功" : location.Provider)}");
             return location is not null ? DetectionResult.Ok(location) : DetectionResult.Fail(
                 $"已探测到 ChatGPT 出口 {trace.Ip}，但无法查询该 IP 的有效地区与时区；未使用其他出口或旧结果。\r\n" + string.Join("\r\n", errors));
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            return DetectionResult.Fail("出口检测超时（最多约 7 秒），未使用历史结果。请确认网络后重试。");
-        }
+        finally { geoRace.Cancel(); }
     }
 
     private static async Task<T?> FirstValidAsync<T>(List<Task<T?>> pending, CancellationToken cancellationToken) where T : class
     {
         while (pending.Count > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var finished = await Task.WhenAny(pending).WaitAsync(cancellationToken);
             pending.Remove(finished);
             if (await finished is { } result) return result;
@@ -102,13 +119,15 @@ public sealed class GeoIpService
     private static async Task<TraceResult?> TryTraceAsync(HttpClient client, Uri endpoint,
         ConcurrentQueue<string> errors, CancellationToken cancellationToken)
     {
+        using var requestDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        requestDeadline.CancelAfter(RequestTimeout);
         try
         {
-            using var response = await SendFreshAsync(client, endpoint, cancellationToken);
+            using var response = await SendFreshAsync(client, endpoint, requestDeadline.Token);
             response.EnsureSuccessStatusCode();
             if (!string.Equals(response.RequestMessage?.RequestUri?.Host, endpoint.Host, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("重定向到其他域名，已忽略");
-            var fields = ParseTrace(await ReadSmallBodyAsync(response, cancellationToken));
+            var fields = ParseTrace(await ReadSmallBodyAsync(response, requestDeadline.Token));
             if (fields.TryGetValue("ip", out var text) && IPAddress.TryParse(text, out var ip))
                 return new(ip.ToString(), endpoint.Host, fields.GetValueOrDefault("loc")?.ToUpperInvariant());
             throw new InvalidDataException("trace 未返回有效 IP");
@@ -123,6 +142,8 @@ public sealed class GeoIpService
     private static async Task<GeoLocation?> TryGeoAsync(HttpClient client, TraceResult trace, string provider,
         ConcurrentQueue<string> errors, CancellationToken cancellationToken)
     {
+        using var requestDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        requestDeadline.CancelAfter(RequestTimeout);
         var url = provider switch
         {
             "ipinfo.io" => $"https://ipinfo.io/{trace.Ip}/json",
@@ -131,9 +152,9 @@ public sealed class GeoIpService
         };
         try
         {
-            using var response = await SendFreshAsync(client, new Uri(url), cancellationToken);
+            using var response = await SendFreshAsync(client, new Uri(url), requestDeadline.Token);
             response.EnsureSuccessStatusCode();
-            using var json = JsonDocument.Parse(await ReadSmallBodyAsync(response, cancellationToken));
+            using var json = JsonDocument.Parse(await ReadSmallBodyAsync(response, requestDeadline.Token));
             var root = json.RootElement;
             if (root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.True ||
                 root.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.False)
@@ -158,7 +179,7 @@ public sealed class GeoIpService
     private static async Task<HttpResponseMessage> SendFreshAsync(HttpClient client, Uri uri, CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-        request.Headers.UserAgent.ParseAdd("ChatGPTTimezoneLauncher/1.3");
+        request.Headers.UserAgent.ParseAdd("ChatGPTTimezoneLauncher/1.3.1");
         request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true, NoStore = true };
         request.Headers.TryAddWithoutValidation("Pragma", "no-cache");
         request.Headers.ConnectionClose = true;
