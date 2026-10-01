@@ -6,17 +6,25 @@ using System.Text;
 using System.Text.Json;
 using ChatGptTimezoneLauncher;
 
-if (args.Length == 1 && args[0] == "--check-exit")
+if (args.Length >= 1 && args[0] == "--check-exit")
 {
-    var detection = await new GeoIpService().DetectAsync();
-    var error = LaunchProtection.GetIpError(detection);
-    Console.WriteLine(JsonSerializer.Serialize(new
+    var detector = new GeoIpService();
+    var count = args.Length == 2 ? Math.Clamp(int.Parse(args[1]), 1, 5) : 1;
+    var passed = true;
+    for (var iteration = 1; iteration <= count; iteration++)
     {
-        stage = "exit-check", detection.Success, country = detection.Location?.CountryCode,
-        traceCountry = detection.Location?.TraceCountryCode, allowed = error is null,
-        message = error is null ? "出口地区检查通过，未启动 ChatGPT" : "IP 检查未通过，未启动 ChatGPT"
-    }));
-    return detection.Success ? 0 : 1;
+        var watch = Stopwatch.StartNew();
+        var detection = await detector.DetectAsync();
+        var error = LaunchProtection.GetIpError(detection);
+        passed &= detection.Success;
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            stage = "exit-check", iteration, detection.Success, country = detection.Location?.CountryCode,
+            traceCountry = detection.Location?.TraceCountryCode, allowed = error is null, elapsedMs = watch.ElapsedMilliseconds,
+            message = error is null ? "出口地区检查通过，未启动 ChatGPT" : "IP 检查未通过，未启动 ChatGPT"
+        }));
+    }
+    return passed ? 0 : 1;
 }
 if (args.Length == 2 && args[0] == "--check-update")
 {

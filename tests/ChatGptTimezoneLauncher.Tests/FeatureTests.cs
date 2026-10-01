@@ -15,9 +15,11 @@ internal static class FeatureTests
         ("auto-close setting persists and only applies after successful launch", TestCloseSetting),
         ("default activation must find the client before auto-close", TestDefaultConfirmation),
         ("GitHub update selects the Windows asset and checksum", TestUpdateCheck),
+        ("update checks refresh their network client after a proxy switch", TestUpdateRefresh),
         ("update checker rejects untrusted or unverified downloads", TestInvalidUpdate),
         ("update download verifies bytes and preserves existing files", TestDownload),
-        ("main window settings and update link fit the layout", TestWindow)
+        ("main window settings and update link fit the layout", TestWindow),
+        ("window resize and display scaling keep controls accessible", TestResponsive)
     ];
 
     private static async Task TestBlockedRegions()
@@ -130,6 +132,20 @@ internal static class FeatureTests
         catch (HttpRequestException) { }
     }
 
+    private static async Task TestUpdateRefresh()
+    {
+        var online = false; var clients = 0;
+        var service = new UpdateService(clientFactory: () =>
+        {
+            clients++; var snapshot = online;
+            return new HttpClient(new ScenarioHandler((_, _) => snapshot ? Json(ReleaseJson(new string('a', 64))) : new(HttpStatusCode.ServiceUnavailable)));
+        });
+        try { await service.CheckAsync(new Version(1, 0, 0)); throw new Exception("offline route was accepted"); }
+        catch (HttpRequestException) { }
+        online = true;
+        Require(await service.CheckAsync(new Version(1, 0, 0)) is not null && clients == 2, "update check reused its old route");
+    }
+
     private static async Task TestDownload()
     {
         using var temp = new TempDirectory();
@@ -155,6 +171,7 @@ internal static class FeatureTests
         {
             try
             {
+                Application.EnableVisualStyles();
                 var store = new ConfigStore(temp.Path);
                 using var form = new MainForm(store, checkUpdates: false);
                 form.Show(); Application.DoEvents();
@@ -170,9 +187,21 @@ internal static class FeatureTests
                 var preview = Environment.GetEnvironmentVariable("LAUNCHER_TEST_PREVIEW");
                 if (!string.IsNullOrWhiteSpace(preview))
                 {
+                    AllControls(form).OfType<RadioButton>().Single(x => x.Text == "自动跟随出口").Checked = true;
+                    typeof(MainForm).GetMethod("ShowLocation", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                        .Invoke(form, [new GeoLocation("203.0.113.8", "US", "美国", "洛杉矶", "America/Los_Angeles", DateTimeOffset.Now,
+                            "演示", "chatgpt.com/cdn-cgi/trace → 指定 IP GeoIP"), "出口检查通过"]);
+                    Application.DoEvents();
                     using var bitmap = new Bitmap(form.Width, form.Height);
                     form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
                     bitmap.Save(preview);
+                    var docPreview = Environment.GetEnvironmentVariable("LAUNCHER_DOC_PREVIEW");
+                    if (!string.IsNullOrWhiteSpace(docPreview))
+                    {
+                        var origin = form.PointToScreen(Point.Empty) - new Size(form.Location);
+                        using var cropped = bitmap.Clone(new Rectangle(origin, form.ClientSize), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                        cropped.Save(docPreview);
+                    }
                 }
                 form.Close();
                 using var reopened = new MainForm(store, checkUpdates: false);
@@ -188,6 +217,45 @@ internal static class FeatureTests
 
     private static IEnumerable<Control> AllControls(Control control) =>
         control.Controls.Cast<Control>().SelectMany(child => AllControls(child).Prepend(child));
+
+    private static Task TestResponsive()
+    {
+        using var temp = new TempDirectory();
+        Exception? error = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                Application.EnableVisualStyles();
+                foreach (var factor in new[] { 1f, 1.25f, 1.5f })
+                foreach (var size in new[] { new Size(504, 501), new Size(660, 540), new Size(1024, 780) })
+                {
+                    using var form = new MainForm(new ConfigStore(temp.Path), checkUpdates: false);
+                    if (factor != 1) form.Scale(new SizeF(factor, factor));
+                    form.ClientSize = size;
+                    form.Show(); Application.DoEvents();
+                    AllControls(form).OfType<RadioButton>().Single(x => x.Text == "手动选择时区").Checked = true;
+                    var link = AllControls(form).OfType<LinkLabel>().Single(x => x.Text == "检测详情 ▾");
+                    typeof(LinkLabel).GetMethod("OnLinkClicked", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                        .Invoke(link, [new LinkLabelLinkClickedEventArgs(link.Links[0])]);
+                    Application.DoEvents();
+                    foreach (var control in AllControls(form).Where(x => x.Visible && x is Button or ComboBox or CheckBox))
+                    {
+                        var rectangle = form.RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
+                        Require(rectangle.Left >= 0 && rectangle.Right <= form.ClientSize.Width,
+                            $"horizontal clipping at {size}/{factor}: {control.Text}");
+                    }
+                    Require(AllControls(form).OfType<ComboBox>().Single().Width >= 140, "manual search box became too narrow");
+                    form.Close();
+                }
+            }
+            catch (Exception ex) { error = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        Require(thread.Join(TimeSpan.FromSeconds(30)), "responsive layout check timed out");
+        if (error is not null) throw error;
+        return Task.CompletedTask;
+    }
     private static GeoLocation Location(string country) => new("203.0.113.8", country, country, null,
         "America/New_York", DateTimeOffset.Now, "test", "chatgpt.com/cdn-cgi/trace → 指定 IP GeoIP");
     private static string ReleaseJson(string? hash, bool external = false, bool checksums = false)

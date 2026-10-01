@@ -10,21 +10,38 @@ public sealed class UpdateService
 {
     public const string ReleasesUrl = "https://github.com/404elf/chatgpt-timezone-launcher/releases/latest";
     private const string DownloadPrefix = "https://github.com/404elf/chatgpt-timezone-launcher/releases/download/";
-    private readonly HttpClient _client;
+    private readonly HttpClient? _testClient;
+    private readonly Func<HttpClient> _clientFactory;
 
-    public UpdateService(HttpClient? client = null)
+    public UpdateService(HttpClient? client = null, Func<HttpClient>? clientFactory = null)
     {
-        _client = client ?? new HttpClient();
-        _client.Timeout = TimeSpan.FromMinutes(3);
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("ChatGPTTimezoneLauncher/1.2");
-        _client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        _testClient = client;
+        _clientFactory = clientFactory ?? (() => new HttpClient(new WinHttpHandler
+        {
+            WindowsProxyUsePolicy = WindowsProxyUsePolicy.UseWinInetProxy,
+            AutomaticRedirection = true,
+            SendTimeout = TimeSpan.FromSeconds(10), ReceiveHeadersTimeout = TimeSpan.FromSeconds(10),
+            ReceiveDataTimeout = TimeSpan.FromSeconds(30)
+        }));
+        if (client is not null) Configure(client);
     }
+
+    private static void Configure(HttpClient client)
+    {
+        client.Timeout = TimeSpan.FromMinutes(3);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("ChatGPTTimezoneLauncher/1.3");
+        client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        client.DefaultRequestHeaders.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true, NoStore = true };
+    }
+    private HttpClient CreateClient() { var client = _clientFactory(); Configure(client); return client; }
 
     public async Task<LauncherUpdate?> CheckAsync(Version currentVersion, CancellationToken cancellationToken = default)
     {
+        using var ownedClient = _testClient is null ? CreateClient() : null;
+        var client = _testClient ?? ownedClient!;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
-        var release = await _client.GetFromJsonAsync<Release>(
+        var release = await client.GetFromJsonAsync<Release>(
             "https://api.github.com/repos/404elf/chatgpt-timezone-launcher/releases/latest", timeout.Token);
         if (release is null || release.Draft || release.Prerelease ||
             !Version.TryParse(release.Tag?.TrimStart('v'), out var version))
@@ -41,7 +58,7 @@ public sealed class UpdateService
             var checksums = release.Assets?.SingleOrDefault(x => x.Name == $"SHA256SUMS-v{version}.txt");
             if (checksums is null || !IsReleaseDownload(checksums.Url))
                 throw new InvalidDataException("新版缺少校验信息，暂时无法安全下载。");
-            var text = await _client.GetStringAsync(checksums.Url!, timeout.Token);
+            var text = await client.GetStringAsync(checksums.Url!, timeout.Token);
             if (text.Length > 64 * 1024) throw new InvalidDataException("校验文件无效。");
             hash = text.Split('\n').Select(line => line.Trim().Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))
                 .Where(parts => parts.Length == 2 && parts[1].TrimStart('*') == fileName)
@@ -62,7 +79,9 @@ public sealed class UpdateService
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, update.FileName);
         var partial = path + ".part";
-        using var response = await _client.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        using var ownedClient = _testClient is null ? CreateClient() : null;
+        var client = _testClient ?? ownedClient!;
+        using var response = await client.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
         await using (var input = await response.Content.ReadAsStreamAsync(cancellationToken))
         await using (var output = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, true))

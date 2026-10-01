@@ -8,10 +8,24 @@ internal static class Program
         if (args.Length == 2 && args[0] == PackagedProcessLauncher.HelperArgument)
             return PackagedProcessLauncher.RunHelperAsync(args[1]).GetAwaiter().GetResult();
         var selfTest = args.Length == 2 && args[0] == "--self-test";
+        var networkSelfTest = args.Length == 2 && args[0] == "--network-self-test";
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             StartupDiagnostics.Report(e.ExceptionObject as Exception ?? new Exception(e.ExceptionObject?.ToString()));
         try
         {
+            if (networkSelfTest)
+            {
+                var directory = Path.GetFullPath(args[1]); Directory.CreateDirectory(directory);
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                var detection = new GeoIpService().DetectAsync().GetAwaiter().GetResult();
+                File.WriteAllText(Path.Combine(directory, "network-result.json"), System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    detection.Success, country = detection.Location?.CountryCode,
+                    traceCountry = detection.Location?.TraceCountryCode,
+                    allowed = LaunchProtection.GetIpError(detection) is null, elapsedMs = watch.ElapsedMilliseconds
+                }));
+                return detection.Success ? 0 : 1;
+            }
             Application.SetUnhandledExceptionMode(selfTest
                 ? UnhandledExceptionMode.ThrowException : UnhandledExceptionMode.CatchException);
             Application.ThreadException += (_, e) => StartupDiagnostics.Report(e.Exception);
@@ -32,7 +46,7 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            if (selfTest) StartupDiagnostics.Write(ex);
+            if (selfTest || networkSelfTest) StartupDiagnostics.Write(ex);
             else StartupDiagnostics.Report(ex);
             return 1;
         }

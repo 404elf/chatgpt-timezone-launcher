@@ -14,6 +14,8 @@ public sealed class MainForm : Form
     private bool _busy;
     private bool _checkingUpdate;
     private LauncherConfig _config;
+    private Panel _manualPanel = null!;
+    private Panel _detailsPanel = null!;
 
     private readonly RadioButton _autoRadio = new() { Text = "自动跟随 ChatGPT 实际出口", AutoSize = true };
     private readonly RadioButton _manualRadio = new() { Text = "手动选择时区", AutoSize = true };
@@ -41,10 +43,11 @@ public sealed class MainForm : Form
         _config = loaded.Config;
         Text = "ChatGPT 时区启动器";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(700, 720);
-        ClientSize = new Size(800, 920);
+        MinimumSize = new Size(520, 540);
+        ClientSize = new Size(660, 540);
         Font = new Font("Microsoft YaHei UI", 9.5f);
         AutoScaleMode = AutoScaleMode.Dpi;
+        Icon = UiArtwork.LoadIcon();
 
         BuildUi();
         LoadConfigIntoUi();
@@ -74,91 +77,137 @@ public sealed class MainForm : Form
 
     private void BuildUi()
     {
+        BackColor = Color.FromArgb(244, 246, 252);
+        ForeColor = Color.FromArgb(31, 39, 62);
         var root = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(24, 20, 24, 20),
-            ColumnCount = 1,
-            RowCount = 8,
-            AutoScroll = true
+            Dock = DockStyle.Fill, Padding = new Padding(24), ColumnCount = 1, RowCount = 7, AutoScroll = true
         };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (var i = 0; i < 6; i++) root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        var title = new Label { Text = "ChatGPT 时区启动器", Font = new Font(Font.FontFamily, 18, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 0, 0, 4) };
-        var subtitle = new Label { Text = "只为本次启动的 ChatGPT 进程设置时区，不修改 Windows 系统时区。", ForeColor = Color.DimGray, AutoSize = true, Margin = new Padding(0, 0, 0, 16) };
-        var titlePanel = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Fill, WrapContents = false };
-        titlePanel.Controls.Add(title); titlePanel.Controls.Add(subtitle);
-        root.Controls.Add(titlePanel);
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3, Margin = new Padding(0, 0, 0, 18) };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.Controls.Add(new PictureBox { Image = UiArtwork.LoadImage(), SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(48, 48), Margin = new Padding(0) }, 0, 0);
+        var heading = new Panel { Dock = DockStyle.Fill, Height = 58, Margin = new Padding(0) };
+        heading.Controls.Add(new Label { Text = "ChatGPT 时区启动器", Font = new Font(Font.FontFamily, 16, FontStyle.Bold), Dock = DockStyle.Top, Height = 32, AutoEllipsis = true });
+        heading.Controls.Add(new Label { Text = "跟随出口时区，轻松启动", ForeColor = Color.DimGray, Dock = DockStyle.Bottom, Height = 24 });
+        header.Controls.Add(heading, 1, 0);
+        _updateLink.Margin = new Padding(8, 12, 0, 0);
+        header.Controls.Add(_updateLink, 2, 0);
+        root.Controls.Add(header, 0, 0);
 
-        var statePanel = new Panel { Height = 48, Dock = DockStyle.Fill, BackColor = Color.FromArgb(239, 246, 255), Margin = new Padding(0, 0, 0, 14) };
-        _overrideState.AutoSize = true; _overrideState.Location = new Point(14, 14); _overrideState.Font = new Font(Font, FontStyle.Bold);
-        statePanel.Controls.Add(_overrideState); root.Controls.Add(statePanel);
+        var networkCard = new UiCard { Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(18, 16, 18, 16), Margin = new Padding(0, 0, 0, 14) };
+        var network = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
+        network.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        network.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _detectionState.AutoSize = true; _detectionState.Dock = DockStyle.Top;
+        _detectionState.Margin = new Padding(0, 0, 0, 8);
+        network.Controls.Add(_detectionState, 0, 0); network.SetColumnSpan(_detectionState, 2);
+        _ipValue.AutoSize = false; _ipValue.Dock = DockStyle.Fill; _ipValue.Height = 38;
+        _ipValue.Font = new Font(Font.FontFamily, 17, FontStyle.Bold); _ipValue.AutoEllipsis = true;
+        _ipValue.Margin = new Padding(0, 0, 8, 3);
+        network.Controls.Add(_ipValue, 0, 1);
+        StyleButton(_detectButton, false); _detectButton.Text = "重新检测"; _detectButton.AutoSize = false;
+        _detectButton.Size = new Size(104, 34); _detectButton.Margin = new Padding(0, 0, 0, 3);
+        network.Controls.Add(_detectButton, 1, 1);
+        var location = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0), WrapContents = true };
+        _locationValue.Font = _zoneValue.Font = Font;
+        _locationValue.ForeColor = _zoneValue.ForeColor = Color.FromArgb(90, 102, 127);
+        _locationValue.Margin = new Padding(0, 3, 14, 0); _zoneValue.Margin = new Padding(0, 3, 0, 0);
+        location.Controls.Add(_locationValue); location.Controls.Add(_zoneValue);
+        network.Controls.Add(location, 0, 2); network.SetColumnSpan(location, 2);
+        networkCard.Controls.Add(network); root.Controls.Add(networkCard, 0, 1);
 
-        var modeGroup = new GroupBox { Text = "模式", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(14, 10, 14, 12), Margin = new Padding(0, 0, 0, 12) };
-        var modes = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Fill, AutoSize = true, WrapContents = false };
-        _autoRadio.Margin = new Padding(3, 5, 3, 6); _manualRadio.Margin = new Padding(3, 2, 3, 3);
-        modes.Controls.Add(_autoRadio); modes.Controls.Add(_manualRadio); modeGroup.Controls.Add(modes); root.Controls.Add(modeGroup);
-
-        var statusGroup = new GroupBox { Text = "ChatGPT 出口检测", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(14, 10, 14, 12), Margin = new Padding(0, 0, 0, 12) };
-        var status = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 8 };
-        status.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145)); status.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _detectionState.AutoSize = false; _detectionState.Dock = DockStyle.Fill; _detectionState.Height = 24;
-        AddRow(status, 0, "检测状态", _detectionState); AddRow(status, 1, "ChatGPT 出口 IP", _ipValue);
-        AddRow(status, 2, "实际命中代理组", _proxyGroupValue); AddRow(status, 3, "当前节点", _proxyNodeValue);
-        AddRow(status, 4, "位置", _locationValue); AddRow(status, 5, "IANA 时区", _zoneValue);
-        AddRow(status, 6, "检测方式", _providerValue);
-        _detectButton.Margin = new Padding(0, 9, 0, 0); status.Controls.Add(_detectButton, 1, 7);
-        statusGroup.Controls.Add(status); root.Controls.Add(statusGroup);
-
-        var manualGroup = new GroupBox { Text = "手动时区", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(14, 10, 14, 12), Margin = new Padding(0, 0, 0, 12) };
-        var manual = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 2 };
-        manual.Controls.Add(new Label { Text = "输入城市或时区片段搜索，或从列表选择标准 IANA 时区：", AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(0, 0, 0, 7) });
-        _timeZoneBox.Dock = DockStyle.Top; _timeZoneBox.DropDownStyle = ComboBoxStyle.DropDown; _timeZoneBox.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
-        _timeZoneBox.AutoCompleteSource = AutoCompleteSource.ListItems; _timeZoneBox.MaxDropDownItems = 14;
-        _timeZoneBox.Items.AddRange(TimeZoneCatalog.All.Cast<object>().ToArray()); manual.Controls.Add(_timeZoneBox);
-        manualGroup.Controls.Add(manual); root.Controls.Add(manualGroup);
+        var modeCard = new UiCard { Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(18, 14, 18, 14), Margin = new Padding(0, 0, 0, 14) };
+        var modes = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
+        modes.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _overrideState.AutoSize = true; _overrideState.Dock = DockStyle.Top; _overrideState.Margin = new Padding(0, 0, 0, 10);
+        _overrideState.ForeColor = Color.DimGray;
+        modes.Controls.Add(_overrideState);
+        var choices = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0), WrapContents = true };
+        _autoRadio.Text = "自动跟随出口"; _manualRadio.Text = "手动选择时区";
+        _autoRadio.Margin = new Padding(0, 0, 24, 0); _manualRadio.Margin = new Padding(0);
+        choices.Controls.Add(_autoRadio); choices.Controls.Add(_manualRadio); modes.Controls.Add(choices);
+        _manualPanel = new Panel { Dock = DockStyle.Top, Height = 46, Margin = new Padding(0, 10, 0, 0) };
+        _timeZoneBox.Dock = DockStyle.Top; _timeZoneBox.DropDownStyle = ComboBoxStyle.DropDown;
+        _timeZoneBox.AutoCompleteMode = AutoCompleteMode.SuggestAppend; _timeZoneBox.AutoCompleteSource = AutoCompleteSource.ListItems;
+        _timeZoneBox.MaxDropDownItems = 12; _timeZoneBox.Items.AddRange(TimeZoneCatalog.All.Cast<object>().ToArray());
+        _manualPanel.Controls.Add(_timeZoneBox); modes.Controls.Add(_manualPanel);
+        modeCard.Controls.Add(modes); root.Controls.Add(modeCard, 0, 2);
 
         var buttons = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 1, Margin = new Padding(0, 0, 0, 12) };
-        buttons.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        _launchButton.AutoSize = false; _launchButton.Dock = DockStyle.Fill; _launchButton.BackColor = Color.FromArgb(37, 99, 235); _launchButton.ForeColor = Color.White; _launchButton.FlatStyle = FlatStyle.Flat;
-        _restoreButton.AutoSize = false; _restoreButton.Dock = DockStyle.Fill; _restoreButton.BackColor = Color.FromArgb(255, 247, 237); _restoreButton.ForeColor = Color.FromArgb(154, 52, 18); _restoreButton.FlatStyle = FlatStyle.Flat;
-        _launchButton.Margin = new Padding(0, 0, 6, 0); _restoreButton.Margin = new Padding(6, 0, 0, 0);
-        buttons.Controls.Add(_launchButton); buttons.Controls.Add(_restoreButton); root.Controls.Add(buttons);
+        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 64)); buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
+        buttons.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        StyleButton(_launchButton, true); StyleButton(_restoreButton, false);
+        _launchButton.Dock = _restoreButton.Dock = DockStyle.Fill; _launchButton.AutoSize = _restoreButton.AutoSize = false;
+        _launchButton.Margin = new Padding(0, 0, 8, 0); _restoreButton.Margin = new Padding(0);
+        _restoreButton.Text = "恢复默认方式";
+        buttons.Controls.Add(_launchButton); buttons.Controls.Add(_restoreButton); root.Controls.Add(buttons, 0, 3);
 
-        var detailsGroup = new GroupBox { Text = "状态与诊断", Dock = DockStyle.Fill, MinimumSize = new Size(0, 85), Padding = new Padding(10), Margin = new Padding(0, 0, 0, 12) };
-        detailsGroup.Controls.Add(_details); root.Controls.Add(detailsGroup);
-        var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
-        _closeAfterLaunch.Margin = new Padding(3, 0, 3, 8);
-        footer.Controls.Add(_closeAfterLaunch);
-        var tools = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        tools.Controls.Add(_shortcutButton); tools.Controls.Add(_updateLink);
-        tools.Controls.Add(new Label { Text = "  配置：%LocalAppData%\\ChatGPTTimezoneLauncher", AutoSize = true, ForeColor = Color.Gray, Padding = new Padding(0, 6, 0, 0) });
-        footer.Controls.Add(tools);
-        root.Controls.Add(footer); Controls.Add(root);
+        var diagnostics = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, Margin = new Padding(0, 0, 0, 12) };
+        diagnostics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var detailsLink = new LinkLabel { Text = "检测详情 ▾", AutoSize = true, LinkColor = Color.DimGray, Margin = new Padding(0, 0, 0, 5) };
+        _details.Font = new Font("Consolas", 9); _details.BorderStyle = BorderStyle.None; _details.BackColor = Color.White;
+        _detailsPanel = new UiCard { Dock = DockStyle.Top, Height = 134, Padding = new Padding(12), Visible = false, Margin = new Padding(0) };
+        _detailsPanel.Controls.Add(_details);
+        detailsLink.LinkClicked += (_, _) =>
+        {
+            _detailsPanel.Visible = !_detailsPanel.Visible;
+            detailsLink.Text = _detailsPanel.Visible ? "收起详情 ▴" : "检测详情 ▾";
+        };
+        diagnostics.Controls.Add(detailsLink); diagnostics.Controls.Add(_detailsPanel); root.Controls.Add(diagnostics, 0, 4);
+
+        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, Margin = new Padding(0) };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _closeAfterLaunch.Margin = new Padding(0, 2, 0, 10); footer.Controls.Add(_closeAfterLaunch);
+        var tools = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0) };
+        _shortcutButton.Text = "创建桌面入口"; _shortcutButton.FlatStyle = FlatStyle.Flat;
+        _shortcutButton.FlatAppearance.BorderSize = 0; _shortcutButton.ForeColor = Color.DimGray; _shortcutButton.Margin = new Padding(0, 0, 14, 0);
+        tools.Controls.Add(_shortcutButton);
+        tools.Controls.Add(new Label { Text = "v" + typeof(MainForm).Assembly.GetName().Version!.ToString(3) + " · 系统时区不变", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(0, 7, 0, 0) });
+        footer.Controls.Add(tools); root.Controls.Add(footer, 0, 5);
+        Controls.Add(root);
+
+        root.SizeChanged += (_, _) =>
+        {
+            var width = Math.Max(180, root.ClientSize.Width - root.Padding.Horizontal - 40);
+            _detectionState.MaximumSize = _overrideState.MaximumSize = new Size(width, 0);
+            _locationValue.MaximumSize = _zoneValue.MaximumSize = new Size(width, 0);
+        };
+    }
+
+    private static void StyleButton(Button button, bool primary)
+    {
+        button.FlatStyle = FlatStyle.Flat; button.FlatAppearance.BorderSize = primary ? 0 : 1;
+        button.FlatAppearance.BorderColor = Color.FromArgb(215, 222, 241);
+        button.BackColor = primary ? Color.FromArgb(72, 93, 224) : Color.White;
+        button.ForeColor = primary ? Color.White : Color.FromArgb(72, 85, 121);
+        button.Cursor = Cursors.Hand;
     }
 
     private async Task DetectAsync()
     {
         SetBusy(true, "正在检测当前网络出口…");
+        var watch = Stopwatch.StartNew();
         var result = await _geoIp.DetectAsync();
+        if (IsDisposed) return;
         SetBusy(false);
         if (result.Success)
         {
-            _config.LastSuccessfulAutoDetection = result.Location;
-            _configStore.Save(_config);
-            ShowLocation(result.Location!, "检测成功");
+            ShowLocation(result.Location!, $"检测成功 · {watch.Elapsed.TotalSeconds:0.0} 秒");
             var ipError = LaunchProtection.GetIpError(result);
             if (ipError is not null)
             {
                 _detectionState.Text = "IP 错误（禁止启动）"; _detectionState.ForeColor = Color.Firebrick;
+            }
+            else
+            {
+                _config.LastSuccessfulAutoDetection = result.Location;
+                _configStore.Save(_config);
             }
             _details.Text = ipError ?? $"先通过 {result.Location!.DetectionMethod} 确定 ChatGPT 出口，再由 {result.Location.Provider} 查询该指定 IP。每次启动都会重新探测。";
         }
@@ -166,7 +215,7 @@ public sealed class MainForm : Form
         {
             _detectionState.Text = "ChatGPT 出口检测失败（未猜测时区）"; _detectionState.ForeColor = Color.Firebrick;
             _details.Text = result.Message + LastSuccessText();
-            if (_config.LastSuccessfulAutoDetection is not null) ShowLocationValues(_config.LastSuccessfulAutoDetection);
+            _ipValue.Text = "无法确认出口"; _locationValue.Text = _zoneValue.Text = "—";
         }
     }
 
@@ -264,22 +313,23 @@ public sealed class MainForm : Form
 
     private void UpdateModeUi()
     {
+        _manualPanel.Visible = _manualRadio.Checked;
         _timeZoneBox.Enabled = !_busy && _manualRadio.Checked;
         _detectButton.Enabled = !_busy;
-        _launchButton.Text = _autoRadio.Checked || _manualRadio.Checked ? "保存并启动 ChatGPT" : "启动 ChatGPT（默认方式）";
+        _launchButton.Text = "启动 ChatGPT";
         UpdateOverrideState();
     }
 
     private void UpdateOverrideState()
     {
-        if (!_config.TimeZoneOverrideEnabled)
+        if (!_autoRadio.Checked && !_manualRadio.Checked)
         {
-            _overrideState.Text = "当前：ChatGPT 默认启动方式（不注入 TZ）"; _overrideState.ForeColor = Color.FromArgb(30, 64, 175);
+            _overrideState.Text = "默认方式 · 不覆盖时区"; _overrideState.ForeColor = Color.FromArgb(72, 85, 121);
         }
         else
         {
-            var zone = _config.Mode == TimeZoneMode.Manual ? _config.ManualTimeZone : _config.LastSuccessfulAutoDetection?.TimeZone ?? "等待检测";
-            _overrideState.Text = $"当前：{(_config.Mode == TimeZoneMode.Auto ? "自动时区" : "手动时区")} · {zone}"; _overrideState.ForeColor = Color.FromArgb(21, 128, 61);
+            _overrideState.Text = _autoRadio.Checked ? "自动时区 · 启动前重新检测" : "手动时区 · 出口地区仍会检查";
+            _overrideState.ForeColor = Color.FromArgb(72, 85, 121);
         }
     }
 
@@ -288,7 +338,8 @@ public sealed class MainForm : Form
         if (_config.LastSuccessfulAutoDetection is null)
         {
             _detectionState.Text = "尚未检测";
-            _ipValue.Text = _proxyGroupValue.Text = _proxyNodeValue.Text = _locationValue.Text = _zoneValue.Text = _providerValue.Text = "—";
+            _ipValue.Text = "尚未检测";
+            _proxyGroupValue.Text = _proxyNodeValue.Text = _locationValue.Text = _zoneValue.Text = _providerValue.Text = "—";
         }
         else { ShowLocation(_config.LastSuccessfulAutoDetection, "上次成功结果（仅供参考）"); }
     }
@@ -304,7 +355,8 @@ public sealed class MainForm : Form
         _ipValue.Text = value.Ip;
         _proxyGroupValue.Text = value.ProxyGroup ?? "未读取（检测不依赖 Clash API）";
         _proxyNodeValue.Text = value.ProxyNode ?? "未读取（检测不依赖 Clash API）";
-        _locationValue.Text = value.LocationText; _zoneValue.Text = value.TimeZone;
+        _locationValue.Text = value.LocationText; _zoneValue.Text = string.IsNullOrWhiteSpace(value.TimeZone) ? "地区不支持" : value.TimeZone;
+        _toolTip.SetToolTip(_ipValue, value.Ip);
         _providerValue.Text = $"{value.DetectionMethod} · {value.Provider} · {value.DetectedAt:yyyy-MM-dd HH:mm:ss}";
     }
 
@@ -319,7 +371,12 @@ public sealed class MainForm : Form
         _autoRadio.Enabled = _manualRadio.Enabled = _closeAfterLaunch.Enabled = !busy;
         _timeZoneBox.Enabled = !busy && _manualRadio.Checked;
         _updateLink.Enabled = !busy && !_checkingUpdate;
-        if (busy && text is not null) { _detectionState.Text = text; _detectionState.ForeColor = Color.DarkOrange; }
+        if (busy && text is not null)
+        {
+            _detectionState.Text = text; _detectionState.ForeColor = Color.DarkOrange;
+            if (text.Contains("出口") || text.Contains("当前网络"))
+                _ipValue.Text = _locationValue.Text = _zoneValue.Text = "检测中…";
+        }
     }
 
     private void CreateShortcut()

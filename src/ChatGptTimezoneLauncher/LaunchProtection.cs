@@ -43,4 +43,5 @@ public static class LaunchProtection
     }
 
     public static bool ShouldCloseLauncher(bool enabled, LaunchResult? launch) => enabled && launch is { Success: true };
+    public static bool IsSupportedCountry(string? code) => SupportedCountries.Contains(code?.Trim() ?? "");
 }

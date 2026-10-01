@@ -34,7 +34,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("missing updated executable cannot start a package", TestMissingExecutable),
     ("default startup strips an inherited TZ", TestDefaultInheritedTz),
     ("missing package returns the Windows activation error", TestMissingPackageActivation),
-}.Concat(FeatureTests.Tests).ToArray();
+}.Concat(FeatureTests.Tests).Concat(NetworkTests.Tests).ToArray();
 
 var failures = 0;
 foreach (var test in tests)
