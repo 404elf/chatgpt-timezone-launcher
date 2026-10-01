@@ -6,6 +6,7 @@ public sealed class LauncherConfig
 {
     public int SchemaVersion { get; set; } = 1;
     public bool TimeZoneOverrideEnabled { get; set; }
+    public bool CloseLauncherAfterLaunch { get; set; }
     public TimeZoneMode Mode { get; set; } = TimeZoneMode.Auto;
     public string ManualTimeZone { get; set; } = "Asia/Shanghai";
     public GeoLocation? LastSuccessfulAutoDetection { get; set; }
@@ -13,7 +14,8 @@ public sealed class LauncherConfig
 
 public sealed record GeoLocation(string Ip, string CountryCode, string CountryName,
     string? City, string TimeZone, DateTimeOffset DetectedAt, string Provider,
-    string DetectionMethod = "", string? ProxyGroup = null, string? ProxyNode = null)
+    string DetectionMethod = "", string? ProxyGroup = null, string? ProxyNode = null,
+    string? TraceCountryCode = null)
 {
     public string LocationText => string.IsNullOrWhiteSpace(City)
         ? $"{CountryName} ({CountryCode})"

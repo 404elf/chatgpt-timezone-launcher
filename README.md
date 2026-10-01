@@ -23,9 +23,9 @@
 
 ## 使用
 
-1. 从 [GitHub Releases](https://github.com/404elf/chatgpt-timezone-launcher/releases/latest) 下载 `ChatGPT-TimeZone-Launcher-v1.1.2-win-x64.exe`，放在任意普通目录后运行，无需安装和管理员权限。
+1. 从 [GitHub Releases](https://github.com/404elf/chatgpt-timezone-launcher/releases/latest) 下载 `ChatGPT-TimeZone-Launcher-v1.2.0-win-x64.exe`，放在任意普通目录后运行，无需安装和管理员权限。
 2. 选择“自动跟随 ChatGPT 实际出口”或“手动选择时区”。
-3. 点击“保存并启动 ChatGPT”。自动模式会在每次启动前重新联网检测，节点变化不会被旧缓存遮盖。
+3. 点击“保存并启动 ChatGPT”。所有模式都会先检查当前 ChatGPT 出口 IP 和地区，自动模式还会据此确定时区；节点变化不会被旧缓存遮盖。
 4. 如要停用覆盖，点击醒目的“恢复 ChatGPT 默认启动方式”。此时两个模式均不选中；之后点击“启动 ChatGPT（默认方式）”会使用标准 AppX 激活，不注入 `TZ`。重新点选任一模式即可再次启用。
 
 ChatGPT 已运行时，进程内时区不能动态改变。启用覆盖后，启动器会明确提示，并可在你确认后请求 ChatGPT 正常关闭再重启；不会强制结束进程。
@@ -37,11 +37,18 @@ ChatGPT 已运行时，进程内时区不能动态改变。启用覆盖后，启
 
 ### 恢复默认
 
-点击“恢复 ChatGPT 默认启动方式”后，启动器不再向 ChatGPT 注入 `TZ`。之后点击“启动 ChatGPT（默认方式）”等价于正常 AppX 启动；不会修改或删除 Windows 时区、ChatGPT 文件和用户数据。
+点击“恢复 ChatGPT 默认启动方式”后，启动器不再向 ChatGPT 注入 `TZ`。之后点击“启动 ChatGPT（默认方式）”先检查出口地区，通过后使用正常 AppX 启动；不会修改或删除 Windows 时区、ChatGPT 文件和用户数据。
 
-## 自动时区与隐私
+### 出口保护、更新与自动关闭
 
-自动模式不会再把 GeoIP 服务请求自身的出口当成 ChatGPT 出口。规则分流下，`ipapi.co`、`ipinfo.io` 等域名可能命中 Default Proxy，而 ChatGPT 命中另一策略组；两者的调用方 IP 并不等价。
+- 启动前按 [OpenAI ChatGPT 支持地区清单](https://help.openai.com/en/articles/7947663-chatgpt-supported-countries) 判断出口 IP，清单核对日期为 2026-10-01。中国大陆、香港、澳门等不在清单内的地区，以及未知地区、检测失败，都会提示“IP 错误”并停止启动；检查通过前不会请求关闭或重启已运行的 ChatGPT。手动时区和默认方式同样执行检查，历史检测结果不能放行。
+- 判断依据是出口 IP 的国家/地区代码，手动选 `Asia/Shanghai` 并不代表出口在中国大陆。若 OpenAI trace 返回的地区不受支持，即使 GeoIP 查询显示支持地区，也会停止启动。GeoIP 数据可能有误差；保护按国家/地区粒度判断，无法识别官方清单中部分地区的局部例外，亦不会持续监控启动后的出口变化。
+- 底部小“↻ 更新”入口从 GitHub 检查最新正式版；打开窗口时也会静默检查，有新版才显示“有更新”。点击后可下载 Windows EXE，下载完成会核验 SHA-256 并打开文件位置。关闭启动器后手动替换旧程序即可，原设置继续保留。检查失败不会阻止日常启动，也不会自动覆盖当前 EXE。
+- “启动后自动关闭启动器”默认不勾选，会记住选择。勾选后仅在启动成功时退出启动器；IP 错误、启动失败或取消重启时会保留窗口。
+
+## 出口检测与隐私
+
+所有模式都不会把 GeoIP 服务请求自身的出口当成 ChatGPT 出口。规则分流下，`ipapi.co`、`ipinfo.io` 等域名可能命中 Default Proxy，而 ChatGPT 命中另一策略组；两者的调用方 IP 并不等价。
 
 检测顺序：
 
@@ -79,7 +86,7 @@ OpenAI 官方说明 Windows 客户端通过 Microsoft Store 分发，当前官�
 %LocalAppData%\ChatGPTTimezoneLauncher\settings.json
 ```
 
-仅保存当前模式、手动时区、是否启用覆盖和上次成功检测。更新已有配置时先生成 `settings.json.bak`；新文件写完并反序列化验证后才替换旧文件。配置损坏时保留原文件并以安全默认状态启动。
+仅保存当前模式、手动时区、是否启用覆盖、启动后是否自动关闭启动器和上次成功检测。更新已有配置时先生成 `settings.json.bak`；新文件写完并反序列化验证后才替换旧文件。配置损坏时保留原文件并以安全默认状态启动。旧配置无需迁移，自动关闭默认为关闭。
 
 “恢复默认”只把 `TimeZoneOverrideEnabled` 保存为 `false`。它不会修改 Windows 系统时区、系统/用户环境变量、注册表、ChatGPT 文件或用户数据；手动选择和历史检测结果会保留，方便以后重新启用。
 
@@ -103,7 +110,11 @@ dist\win-x64\ChatGPT时区启动器.exe
 
 启动错误日志：`%LocalAppData%\ChatGPTTimezoneLauncher\logs`（不可写时尝试 `%TEMP%\ChatGPTTimezoneLauncher\logs`）。若无日志，请提供 Windows 版本、CPU 架构及系统错误提示，不能假定所有“无反应”都由同一原因引起。
 
-## v1.1.2 验证结果
+## v1.2.0 验证结果
+
+自动化测试 36/36 通过，新增不支持地区在所有启动方式下阻断、检测失败或切换地区后不使用旧成功结果、trace/GeoIP 地区冲突阻断、自动关闭设置保存、默认激活后确认客户端、更新来源与校验、下载不覆盖已有文件、窗口布局检查。详细验证范围见 `TEST-RESULTS.md`。
+
+## v1.1.2 历史验证结果
 
 自动化测试 26/26 通过，覆盖：原有出口检测、配置和包定位场景、损坏配置下窗口构造，以及包启动失败/超时、非法时区、更新后入口缺失、继承 TZ 清除和真实 Windows 未注册包错误。构建后还验证最终单文件 EXE 在首次启动、损坏配置两种情况下都能创建窗口并正常退出。
 

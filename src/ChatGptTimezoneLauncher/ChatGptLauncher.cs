@@ -16,6 +16,17 @@ public sealed class ChatGptLauncher
 
     public bool IsRunning(ChatGptInstallation installation) => FindRunning(installation).Count > 0;
 
+    public async Task<bool> WaitForRunningAsync(ChatGptInstallation installation, TimeSpan? timeout = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(10));
+        do
+        {
+            if (IsRunning(installation)) return true;
+            await Task.Delay(250);
+        } while (DateTime.UtcNow < deadline);
+        return false;
+    }
+
     public async Task<LaunchResult> LaunchAsync(ChatGptInstallation installation, string? ianaTimeZone)
     {
         var running = IsRunning(installation);

@@ -26,7 +26,7 @@ public sealed class GeoIpService
             AutomaticDecompression = DecompressionMethods.All
         });
         _client.Timeout = TimeSpan.FromSeconds(8);
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("ChatGPTTimezoneLauncher/1.1");
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("ChatGPTTimezoneLauncher/1.2");
     }
 
     public async Task<DetectionResult> DetectAsync(CancellationToken cancellationToken = default)
@@ -73,7 +73,7 @@ public sealed class GeoIpService
                 }
                 var fields = ParseTrace(body);
                 if (fields.TryGetValue("ip", out var ipText) && IPAddress.TryParse(ipText, out var ip))
-                    return new TraceResult(ip.ToString(), endpoint.Host);
+                    return new TraceResult(ip.ToString(), endpoint.Host, fields.GetValueOrDefault("loc"));
                 errors.Add($"{endpoint.Host}: trace 未返回有效 IP");
             }
             catch (Exception ex) when (IsNetworkFailure(ex))
@@ -135,7 +135,7 @@ public sealed class GeoIpService
     private static GeoLocation BuildLocation(TraceResult trace, string ip, string? countryCode,
         string? countryName, string? city, string zone, string provider) =>
         new(ip, countryCode ?? "--", countryName ?? "未知", city, zone, DateTimeOffset.Now, provider,
-            $"{trace.Host}/cdn-cgi/trace → 指定 IP GeoIP", null, null);
+            $"{trace.Host}/cdn-cgi/trace → 指定 IP GeoIP", null, null, trace.CountryCode);
 
     public static IReadOnlyDictionary<string, string> ParseTrace(string body)
     {
@@ -158,7 +158,7 @@ public sealed class GeoIpService
     private static bool IsNetworkFailure(Exception ex) => ex is HttpRequestException or TaskCanceledException or
         NotSupportedException or System.Text.Json.JsonException or InvalidDataException;
     private static string Friendly(Exception ex) => ex is TaskCanceledException ? "请求超时" : ex.Message;
-    private readonly record struct TraceResult(string Ip, string Host);
+    private readonly record struct TraceResult(string Ip, string Host, string? CountryCode);
 
     private sealed class IpApiResponse
     {
