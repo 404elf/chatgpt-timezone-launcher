@@ -8,13 +8,14 @@ namespace ChatGptTimezoneLauncher;
 
 // The same executable briefly runs inside the existing ChatGPT package. Windows
 // supplies its identity; only the new ChatGPT child receives the TZ override.
-public sealed class PackagedProcessLauncher(string? helperPath = null)
+public sealed class PackagedProcessLauncher(string? helperPath = null, DiagnosticLog? diagnostics = null)
 {
     public const string HelperArgument = "--package-launch";
     private readonly string _helperPath = helperPath ?? Environment.ProcessPath!;
 
     public async Task<PackageLaunchResult> LaunchAsync(ChatGptInstallation installation, string? timeZone)
     {
+        diagnostics?.Write("package-activation", $"Package={installation.PackageFullName}; AppId={installation.AppId}; Helper={_helperPath}; HelperExists={File.Exists(_helperPath)}; EntryExists={File.Exists(installation.ExecutablePath)}");
         var pipeName = "ChatGptTimezoneLauncher-" + Guid.NewGuid().ToString("N");
         using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
@@ -31,20 +32,37 @@ public sealed class PackagedProcessLauncher(string? helperPath = null)
             {
                 await exited;
                 if (activation.ExitCode != 0)
-                    throw new InvalidOperationException($"Windows 包内启动失败：{(await stderr).Trim()}");
+                    throw CreateActivationException(activation.ExitCode, await stdout, await stderr);
             }
             await connected;
+            diagnostics?.Write("package-helper-connected", "Package helper connected; requesting client startup and identity verification.");
             using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true);
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
             await writer.WriteLineAsync(JsonSerializer.Serialize(new PackageLaunchRequest(installation, timeZone)).AsMemory(), timeout.Token);
             var response = await reader.ReadLineAsync(timeout.Token);
-            return JsonSerializer.Deserialize<PackageLaunchResult>(response ?? "")
+            var result = JsonSerializer.Deserialize<PackageLaunchResult>(response ?? "")
                 ?? throw new InvalidOperationException("包内启动器没有返回验证结果。");
+            diagnostics?.Write("package-result", JsonSerializer.Serialize(result));
+            return result;
         }
         catch (OperationCanceledException)
         {
+            diagnostics?.Write("package-timeout", $"Helper connection/response timed out; activationExited={activation.HasExited}.");
             throw new TimeoutException("等待 ChatGPT 启动验证超时。请先检查 ChatGPT 是否已经打开，再重试。");
         }
+        catch (Exception ex) { diagnostics?.Error("package-failure", ex); throw; }
+    }
+
+    public static InvalidOperationException CreateActivationException(int exitCode, string stdout, string stderr)
+    {
+        var detail = (string.IsNullOrWhiteSpace(stderr) ? stdout : stderr).Trim();
+        if (detail.Length == 0) detail = "Windows 未返回错误说明。请点击“导出日志”提供诊断文件。";
+        if (detail.Length > 600) detail = detail[..600] + "…（完整输出见导出日志）";
+        var error = new InvalidOperationException($"Windows 包内启动失败（退出码 {exitCode} / 0x{unchecked((uint)exitCode):X8}）。\r\n{detail}");
+        error.Data["Activation.ExitCode"] = $"{exitCode} / 0x{unchecked((uint)exitCode):X8}";
+        error.Data["Activation.Stdout"] = string.IsNullOrWhiteSpace(stdout) ? "<empty>" : stdout[..Math.Min(stdout.Length, 16000)];
+        error.Data["Activation.Stderr"] = string.IsNullOrWhiteSpace(stderr) ? "<empty>" : stderr[..Math.Min(stderr.Length, 16000)];
+        return error;
     }
 
     public static ProcessStartInfo CreateActivationStartInfo(ChatGptInstallation installation, string helperPath, string pipeName)
@@ -57,7 +75,9 @@ public sealed class PackagedProcessLauncher(string? helperPath = null)
             $"Invoke-CommandInDesktopPackage -PackageFamilyName {Literal(installation.PackageFamilyName)} " +
             $"-AppId {Literal(installation.AppId)} -Command {Literal(helperPath)} " +
             $"-Args {Literal(HelperArgument + " " + pipeName)} -PreventBreakaway -ErrorAction Stop; exit 0 " +
-            "} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }";
+            "} catch { [Console]::Error.WriteLine(($_ | Out-String)); [Console]::Error.WriteLine($_.Exception.ToString()); " +
+            "[Console]::Error.WriteLine(('FullyQualifiedErrorId: '+$_.FullyQualifiedErrorId)); " +
+            "[Console]::Error.WriteLine(('CategoryInfo: '+$_.CategoryInfo)); exit 1 }";
         var start = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
             @"WindowsPowerShell\v1.0\powershell.exe"))
         {
@@ -98,7 +118,7 @@ public sealed class PackagedProcessLauncher(string? helperPath = null)
                     ?? throw new InvalidOperationException("启动请求为空。");
                 result = await StartAndVerifyAsync(request);
             }
-            catch (Exception ex) { result = new(false, 0, null, ex.Message); }
+            catch (Exception ex) { result = new(false, 0, null, ex.Message, ex.ToString()); }
             await writer.WriteLineAsync(JsonSerializer.Serialize(result).AsMemory(), timeout.Token);
             return result.Success ? 0 : 1;
         }
@@ -154,4 +174,4 @@ public sealed class PackagedProcessLauncher(string? helperPath = null)
 }
 
 public sealed record PackageLaunchRequest(ChatGptInstallation Installation, string? TimeZone);
-public sealed record PackageLaunchResult(bool Success, int ProcessId, string? PackageFullName, string Message);
+public sealed record PackageLaunchResult(bool Success, int ProcessId, string? PackageFullName, string Message, string? Diagnostics = null);

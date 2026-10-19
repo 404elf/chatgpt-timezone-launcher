@@ -39,6 +39,7 @@ internal static class Program
                 {
                     File.WriteAllText(Path.Combine(args[1], "startup-ok.txt"),
                         $"Window created; timezones={TimeZoneCatalog.All.Count}; runtime={Environment.Version}");
+                    form.ExportDiagnostics(Path.Combine(args[1], "diagnostics-self-test.txt"));
                     form.Close();
                 });
             }

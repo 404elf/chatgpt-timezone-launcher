@@ -6,12 +6,14 @@ public sealed class ChatGptLauncher
 {
     private readonly Func<ProcessStartInfo, Process?> _startProcess;
     private readonly Func<ChatGptInstallation, string?, Task<PackageLaunchResult>> _startPackaged;
+    private readonly DiagnosticLog? _diagnostics;
 
     public ChatGptLauncher(Func<ProcessStartInfo, Process?>? startProcess = null,
-        Func<ChatGptInstallation, string?, Task<PackageLaunchResult>>? startPackaged = null)
+        Func<ChatGptInstallation, string?, Task<PackageLaunchResult>>? startPackaged = null, DiagnosticLog? diagnostics = null)
     {
         _startProcess = startProcess ?? Process.Start;
-        _startPackaged = startPackaged ?? new PackagedProcessLauncher().LaunchAsync;
+        _diagnostics = diagnostics;
+        _startPackaged = startPackaged ?? new PackagedProcessLauncher(diagnostics: diagnostics).LaunchAsync;
     }
 
     public bool IsRunning(ChatGptInstallation installation) => FindRunning(installation).Count > 0;
@@ -29,6 +31,7 @@ public sealed class ChatGptLauncher
 
     public async Task<LaunchResult> LaunchAsync(ChatGptInstallation installation, string? ianaTimeZone)
     {
+        _diagnostics?.Write("launch-request", $"Package={installation.PackageFullName}; Family={installation.PackageFamilyName}; AppId={installation.AppId}; Entry={installation.ExecutablePath}; Mode={ianaTimeZone ?? "default"}");
         var running = IsRunning(installation);
         if (running && ianaTimeZone is not null)
             return new LaunchResult(false, true, "ChatGPT 已经在运行。新的时区将在 ChatGPT 重启后生效。");
@@ -60,6 +63,7 @@ public sealed class ChatGptLauncher
         }
         catch (Exception ex)
         {
+            _diagnostics?.Error("launch-exception", ex);
             return new LaunchResult(false, false, $"启动失败：{ex.Message}");
         }
     }

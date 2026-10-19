@@ -178,6 +178,10 @@ internal static class FeatureTests
                 form.Show(); Application.DoEvents();
                 var checkbox = AllControls(form).OfType<CheckBox>().Single(x => x.Text == "启动后自动关闭启动器");
                 var update = AllControls(form).OfType<LinkLabel>().Single(x => x.Text == "↻ 更新");
+                Require(AllControls(form).OfType<Button>().Any(x => x.Text == "导出日志"), "export action was missing");
+                var exportPath = System.IO.Path.Combine(temp.Path, "window-feedback.txt");
+                form.ExportDiagnostics(exportPath);
+                Require(File.ReadAllText(exportPath).Contains("ui-snapshot"), "window export did not include its current status");
                 Require(!checkbox.Checked && !File.Exists(store.ConfigPath), "window startup saved settings or enabled auto-close");
                 checkbox.Checked = true;
                 Require(store.Load().Config.CloseLauncherAfterLaunch, "checkbox did not save its setting");

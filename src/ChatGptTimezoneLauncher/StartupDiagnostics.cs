@@ -4,8 +4,14 @@ namespace ChatGptTimezoneLauncher;
 
 internal static class StartupDiagnostics
 {
+    internal static DiagnosticLog? CurrentLog { get; set; }
     public static string? Write(Exception exception)
     {
+        if (CurrentLog is { } current)
+        {
+            current.Error("unhandled-exception", exception);
+            if (current.LogPath is not null) return current.LogPath;
+        }
         foreach (var root in new[]
         {
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -20,7 +26,7 @@ internal static class StartupDiagnostics
                 File.WriteAllText(path,
                     $"Time: {DateTimeOffset.Now:O}\nVersion: {typeof(Program).Assembly.GetName().Version}\n" +
                     $"OS: {RuntimeInformation.OSDescription}\nArchitecture: {RuntimeInformation.ProcessArchitecture}\n" +
-                    $"Runtime: {RuntimeInformation.FrameworkDescription}\n{exception}");
+                    $"Runtime: {RuntimeInformation.FrameworkDescription}\n{DiagnosticLog.Redact(exception.ToString())}");
                 return path;
             }
             catch { /* A logging failure must not hide the original error. */ }

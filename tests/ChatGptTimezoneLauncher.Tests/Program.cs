@@ -34,7 +34,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("missing updated executable cannot start a package", TestMissingExecutable),
     ("default startup strips an inherited TZ", TestDefaultInheritedTz),
     ("missing package returns the Windows activation error", TestMissingPackageActivation),
-}.Concat(FeatureTests.Tests).Concat(NetworkTests.Tests).ToArray();
+}.Concat(FeatureTests.Tests).Concat(NetworkTests.Tests).Concat(DiagnosticTests.Tests).ToArray();
 
 var failures = 0;
 foreach (var test in tests)
@@ -319,14 +319,21 @@ static async Task TestDefaultInheritedTz()
 
 static async Task TestMissingPackageActivation()
 {
+    using var temp = new TempDirectory();
+    var diagnostics = new DiagnosticLog(System.IO.Path.Combine(temp.Path, "logs"));
     try
     {
-        await new PackagedProcessLauncher().LaunchAsync(FakeInstall(System.IO.Path.GetTempPath(), "NoSuchChatGPT.exe"), "Asia/Tokyo");
+        await new PackagedProcessLauncher(diagnostics: diagnostics).LaunchAsync(FakeInstall(System.IO.Path.GetTempPath(), "NoSuchChatGPT.exe"), "Asia/Tokyo");
         throw new Exception("unregistered package unexpectedly launched");
     }
     catch (InvalidOperationException ex)
     {
         Assert(ex.Message.Contains("Windows 包内启动失败"), "activation error lost Windows diagnostics");
+        var export = System.IO.Path.Combine(temp.Path, "actual-windows-error.txt");
+        diagnostics.Export(export);
+        var log = File.ReadAllText(export);
+        Assert(log.Contains("Activation.ExitCode") && log.Contains("Activation.Stdout") && log.Contains("Activation.Stderr") &&
+            log.Contains("FullyQualifiedErrorId"), "actual Windows activation diagnostics were not exported");
     }
 }
 

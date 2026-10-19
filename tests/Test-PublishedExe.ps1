@@ -33,6 +33,10 @@ foreach ($scenario in @('fresh', 'corrupt')) {
         throw 'Startup changed the corrupt configuration.'
     }
     if ($scenario -eq 'fresh' -and (Test-Path $config)) { throw 'Startup unexpectedly saved configuration.' }
+    $diagnostics = Join-Path $directory 'diagnostics-self-test.txt'
+    if (-not (Test-Path -LiteralPath $diagnostics) -or -not [IO.File]::ReadAllText($diagnostics).Contains('ui-snapshot')) {
+        throw "Published EXE diagnostic export failed ($scenario); artifacts: $testRoot"
+    }
     Write-Output "PASS published EXE: $scenario"
 }
 Write-Output "Startup test artifacts: $testRoot"

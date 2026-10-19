@@ -8,7 +8,8 @@ public sealed class MainForm : Form
     private readonly ConfigStore _configStore;
     private readonly GeoIpService _geoIp;
     private readonly ChatGptDiscovery _discovery = new();
-    private readonly ChatGptLauncher _launcher = new();
+    private readonly ChatGptLauncher _launcher;
+    private readonly DiagnosticLog _diagnostics;
     private readonly UpdateService _updates = new();
     private readonly ToolTip _toolTip = new();
     private bool _busy;
@@ -37,6 +38,7 @@ public sealed class MainForm : Form
     private readonly Button _launchButton = new() { Text = "保存并启动 ChatGPT", Height = 42, AutoSize = true };
     private readonly Button _restoreButton = new() { Text = "恢复 ChatGPT 默认启动方式", Height = 42, AutoSize = true };
     private readonly Button _shortcutButton = new() { Text = "创建桌面快捷方式", AutoSize = true };
+    private readonly Button _exportLogButton = new() { Text = "导出日志", AutoSize = true };
     private readonly CheckBox _closeAfterLaunch = new() { Text = "启动后自动关闭启动器", AutoSize = true };
     private readonly LinkLabel _updateLink = new() { Text = "↻ 更新", AutoSize = true, LinkColor = Color.DimGray, Margin = new Padding(12, 8, 3, 3) };
     private readonly TextBox _details = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Height = 84, Dock = DockStyle.Fill };
@@ -45,6 +47,9 @@ public sealed class MainForm : Form
     {
         _geoIp = geoIp ?? new GeoIpService();
         _configStore = configStore ?? new ConfigStore();
+        _diagnostics = new DiagnosticLog(Path.Combine(Path.GetDirectoryName(_configStore.ConfigPath)!, "logs"));
+        StartupDiagnostics.CurrentLog = _diagnostics;
+        _launcher = new ChatGptLauncher(diagnostics: _diagnostics);
         var loaded = _configStore.Load();
         _config = loaded.Config;
         Text = "ChatGPT 时区启动器";
@@ -77,6 +82,7 @@ public sealed class MainForm : Form
         _launchButton.Click += async (_, _) => await SaveAndLaunchAsync();
         _restoreButton.Click += (_, _) => RestoreDefault();
         _shortcutButton.Click += (_, _) => CreateShortcut();
+        _exportLogButton.Click += (_, _) => ExportLog();
         _closeAfterLaunch.CheckedChanged += (_, _) =>
         {
             _config.CloseLauncherAfterLaunch = _closeAfterLaunch.Checked;
@@ -89,7 +95,10 @@ public sealed class MainForm : Form
         _timeZoneBox.SelectedIndexChanged += (_, _) => { if (_timeZoneBox.Focused) _manualRadio.Checked = true; };
 
         if (loaded.Warning is not null)
+        {
             _details.Text = loaded.Warning;
+            _diagnostics.Write("config-warning", loaded.Warning);
+        }
     }
 
     private void BuildUi()
@@ -185,6 +194,10 @@ public sealed class MainForm : Form
         _shortcutButton.Text = "创建桌面入口"; _shortcutButton.FlatStyle = FlatStyle.Flat;
         _shortcutButton.FlatAppearance.BorderSize = 0; _shortcutButton.ForeColor = Color.DimGray; _shortcutButton.Margin = new Padding(0, 0, 14, 0);
         tools.Controls.Add(_shortcutButton);
+        _exportLogButton.FlatStyle = FlatStyle.Flat; _exportLogButton.FlatAppearance.BorderSize = 0;
+        _exportLogButton.ForeColor = Color.DimGray; _exportLogButton.Margin = new Padding(0, 0, 14, 0);
+        _toolTip.SetToolTip(_exportLogButton, "导出本次及最近几次运行的诊断信息，附到问题反馈中即可。");
+        tools.Controls.Add(_exportLogButton);
         tools.Controls.Add(new Label { Text = "v" + typeof(MainForm).Assembly.GetName().Version!.ToString(3) + " · 系统时区不变", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(0, 7, 0, 0) });
         footer.Controls.Add(tools); root.Controls.Add(footer, 0, 5);
         Controls.Add(root);
@@ -218,6 +231,7 @@ public sealed class MainForm : Form
         }
         finally { if (!IsDisposed) SetBusy(false); }
         if (IsDisposed) return;
+        _diagnostics.Write("detection-result", result.Success ? $"country={result.Location?.CountryCode}; traceCountry={result.Location?.TraceCountryCode}; zone={result.Location?.TimeZone}" : result.Message);
         if (result.Success)
         {
             ShowLocation(result.Location!, $"检测成功 · {watch.Elapsed.TotalSeconds:0.0} 秒");
@@ -267,6 +281,7 @@ public sealed class MainForm : Form
                 var zone = auto ? location.TimeZone : manual ? manualZone : null;
                 SetBusy(true, "正在定位 Windows 版 ChatGPT…");
                 var discovery = await _discovery.DiscoverAsync();
+                _diagnostics.Write("discovery", discovery.Diagnostics);
                 if (IsDisposed) return null;
                 _details.Text = _detectionLog + Environment.NewLine + discovery.Diagnostics;
                 if (!discovery.Found)
@@ -303,13 +318,15 @@ public sealed class MainForm : Form
                     _locationValue.Text = _zoneValue.Text = "—";
                 }
                 _details.Text = guarded.IpError + "\r\n\r\n" + _detectionLog;
+                _diagnostics.Write("ip-protection", guarded.IpError);
                 MessageBox.Show(this, guarded.IpError, "IP 错误", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
             if (guarded.Launch is { } launch)
             {
+                _diagnostics.Write("launch-result", $"Success={launch.Success}; {launch.Message}");
                 _details.Text = launch.Message + Environment.NewLine + _details.Text;
-                if (!launch.Success) MessageBox.Show(this, launch.Message, "启动结果", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                if (!launch.Success) MessageBox.Show(this, launch.Message + "\r\n\r\n错误已记录。可点击窗口底部“导出日志”，将文件附到反馈中。", "启动结果", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 if (LaunchProtection.ShouldCloseLauncher(_config.CloseLauncherAfterLaunch, launch)) Close();
             }
         }
@@ -333,6 +350,7 @@ public sealed class MainForm : Form
             {
                 if (IsDisposed) return;
                 _detectionLog += message + Environment.NewLine;
+                _diagnostics.Write("network", message);
                 _details.Text = _detectionLog;
                 if (message.StartsWith("2/2")) _detectionStep = "查询地区和时区";
             });
@@ -367,6 +385,7 @@ public sealed class MainForm : Form
         _ipValue.Text = "检测已取消";
         _locationValue.Text = _zoneValue.Text = "—";
         _details.Text = "检测已取消，没有使用历史 IP，也没有请求启动或关闭 ChatGPT。可切换网络后重新检测。\r\n\r\n" + _detectionLog;
+        _diagnostics.Write("detection-cancelled", "Cancelled by the user before client startup.");
     }
 
     private void RestoreDefault()
@@ -456,6 +475,7 @@ public sealed class MainForm : Form
         _updateLink.Enabled = !busy && !_checkingUpdate;
         if (busy && text is not null)
         {
+            _diagnostics.Write("stage", text);
             _detectionState.Text = text; _detectionState.ForeColor = Color.DarkOrange;
             if (text.Contains("出口") || text.Contains("当前网络"))
                 _ipValue.Text = _locationValue.Text = _zoneValue.Text = "检测中…";
@@ -477,6 +497,33 @@ public sealed class MainForm : Form
     {
         try { var path = ShortcutService.CreateDesktopShortcut(); _details.Text = $"已创建桌面快捷方式：{path}"; }
         catch (Exception ex) { MessageBox.Show(this, $"创建快捷方式失败：{ex.Message}", "创建失败", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+    }
+
+    public void ExportDiagnostics(string destination)
+    {
+        _diagnostics.Write("ui-snapshot", $"State={_detectionState.Text}; Mode={(_autoRadio.Checked ? "auto" : _manualRadio.Checked ? "manual" : "default")}; AutoClose={_closeAfterLaunch.Checked}\n{_details.Text}");
+        _diagnostics.Export(destination);
+    }
+
+    private void ExportLog()
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Title = "导出诊断日志", Filter = "诊断日志 (*.txt)|*.txt", DefaultExt = "txt", AddExtension = true,
+            FileName = $"ChatGPT启动器-诊断-{DateTime.Now:yyyyMMdd-HHmmss}.txt",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            ExportDiagnostics(dialog.FileName);
+            MessageBox.Show(this, "日志已导出，将这个文件附到 Issue 或反馈中即可。\r\n文件已对用户名路径、IP 和凭据字段脱敏。", "导出完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _diagnostics.Error("export-failure", ex);
+            MessageBox.Show(this, "导出失败：" + ex.Message + "\r\n请换一个保存位置或使用新的文件名。", "导出失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private async Task CheckUpdateAsync(bool manual)
@@ -511,6 +558,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidDataException or System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
         {
+            _diagnostics.Error("update-failure", ex);
             if (!IsDisposed)
             {
                 _toolTip.SetToolTip(_updateLink, "检查更新失败，点击重试");
